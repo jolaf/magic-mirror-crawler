@@ -195,8 +195,8 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
                 linkName = join(self.mirrorDir, self.LATEST_LINK)
                 if islink(linkName):
                     remove(linkName)
-                    symlink(self.targetDir, linkName)
-                    print("DONE, set as latest")
+                symlink(self.targetDir, linkName)
+                print("DONE, set as latest")
             except Exception as e:
                 print("DONE, error linking: %s" % e)
         else:
@@ -209,7 +209,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
     def loadURL(self, key):
         fileName = self.getFileName(self.urlDatabaseDir, key)
         if isfile(fileName):
-            with open(fileName, 'rb') as f:
+            with open(fileName, 'r') as f:
                 return tuple(line.strip() for line in f.readlines())
 
     def saveData(self, key, sourceStream):
@@ -236,18 +236,19 @@ class MagicMirror(object):
         self.database = databaseClass(databaseLocation)
 
     def downloadURL(self, url):
-        print(url, end = ' ')
         try:
+            print(url, end = ' ')
             request = requests.get(url, stream = True)
             contentType = request.headers['content-type']
             contentLength = request.headers.get('content-length', '')
-            print(contentType, contentLength, 'bytes', end = ' ')
+            print(':: %s :: %s ::' % (contentType, ('%s bytes' % contentLength) if contentLength else 'no content-length'), end = ' ')
             tempHash = dbHash()
             with SpooledTemporaryFile(DATA_CHUNK) as tempFile:
                 for chunk in request.iter_content(DATA_CHUNK):
                     tempFile.write(chunk)
                     tempHash.update(chunk)
                 if contentLength:
+                    contentLength = int(contentLength)
                     assert contentLength == tempFile.tell() # ToDo: May it fail actually?
                 else:
                     contentLength = tempFile.tell()
@@ -260,7 +261,7 @@ class MagicMirror(object):
                     if dataSize:
                         print("DAMAGED, OVERWRITING", end = ' ')
                     else:
-                        print("saving", end = ' ')
+                        print("new, saving", end = ' ')
                     tempFile.seek(0)
                     written = self.database.saveData(contentHash, tempFile)
                     assert written == contentLength
@@ -270,11 +271,12 @@ class MagicMirror(object):
             if urlInfo:
                 (oldURL, oldContentType, oldContentLength, oldContentHash) = urlInfo # pylint: disable=W0633
                 # ToDo: Do something better with this
-                print("Overwriting URL %s %s %s, content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
+                print("Overwriting URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
             self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
         except Exception as e:
             print("\nERROR: %s" % e)
             print(format_exc())
+            raise
 
     @staticmethod
     def test():
@@ -351,8 +353,11 @@ class MagicMirrorCrawler(MagicMirror):
             print(format_exc())
 
     def run(self, sourceURLs):
+        cache = set()
         for sourceURL in sourceURLs:
-            self.crawl(sourceURL)
+            if sourceURL not in cache:
+                self.crawl(sourceURL)
+                cache.add(sourceURL)
 
 class MagicMirrorServer(MagicMirror):
     def __init__(self, databaseLocation, mirrorSuffix):
@@ -412,6 +417,8 @@ def main(args):
         elif command == 'crawl':
             exit(1 if MagicMirrorCrawler(parameters[0]).run(parameters[1:]) else 0)
         elif command == 'serve':
+            MirrorHTTPRequestHandler.configure(*parameters[:2])
+            parameters = parameters[2:]
             HTTPServer(('', int(parameters[0]) if parameters else 80), MirrorHTTPRequestHandler).serve_forever()
             exit(1)
     usage()
