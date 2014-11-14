@@ -1,9 +1,8 @@
 #!/usr/bin/python
 from datetime import datetime
-from getopt import getopt
 from hashlib import md5 as dbHash
-from os import fdopen, makedirs, remove
-from os.path import getsize, isdir, isfile, islink, join
+from os import fdopen, listdir, makedirs, remove
+from os.path import getmtime, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
@@ -51,27 +50,23 @@ def dataHash(data):
     """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
     return (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
 
-def parseURL(url, retainHostNameCase = False):
-    """Normalizes the specified URL and returns (scheme, userName, hostName, port, path, query, fragment) tuple.
+def parseURL(url):
+    """Normalizes the specified URL and returns (scheme, hostName, port, path, query, fragment) tuple.
     scheme is converted to lower case.
-    If userName is not specified, None is returned.
-    hostName is converted to lower case if lowerHostName is True, www. prefix is removed if it exists.
+    Username and password information is dropped.
+    hostName is converted to lower case, www. prefix is removed if it exists.
     If specified port is default for the specified scheme, it's set to None.
     """
     splitURL = urlsplit(url)
-    (scheme, netloc, path, query, fragment) = splitURL
+    (scheme, _netloc, path, query, fragment) = splitURL
     scheme = scheme.lower()
-    userName = splitURL.username
-    hostName = splitURL.hostname or '' # already lower case
-    if retainHostNameCase:
-        index = netloc.lower().index(hostName)
-        hostName = netloc[index : index + len(hostName)]
-    if hostName.lower().startswith(WWW_PREFIX):
+    hostName = splitURL.hostname or '' # always lower case
+    if hostName.startswith(WWW_PREFIX):
         hostName = hostName[len(WWW_PREFIX):]
     port = splitURL.port
     if port and port == STANDARD_PORTS.get(scheme):
         port = None
-    return (scheme, userName, hostName, port, path, query, fragment)
+    return (scheme, hostName, port, path, query, fragment)
 
 def unparseURL(scheme, netloc, path, query, fragment):
     """Joins URL components together.
@@ -80,39 +75,38 @@ def unparseURL(scheme, netloc, path, query, fragment):
     url = urlunsplit((scheme, netloc, path, query, fragment))
     return url if query or fragment or not url.endswith('/') else url[:-1]
 
-def processHostName(url):
-    """Returns mirror host name for the specified url, without mirror suffix.
-    The resulting host name is [scheme.]host.name[.port]
-    Scheme is converted to lower case and omitted if it's http, port is omitted if it's default for the scheme.
-    www. prefix is removed if it exists.
-    Host names case is not altered.
-    """
-    (scheme, _userName, hostName, port, _path, _query, _fragment) = parseURL(url, True)
-    return '.'.join(((scheme,) if scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
-
 def getUrlHash(scheme, netloc, path, query, fragment):
     """Returns URL hash for the specified URL parameters."""
     return dataHash(unparseURL(scheme, netloc, path, query, fragment))
 
-def processOriginalURL(url): # ToDo: Rename to originalUrlHash
+def processHostName(url):
+    """Returns mirror host name for the specified url, without mirror suffix.
+    The resulting host name is [scheme.]host.name[.port], all lower case.
+    Scheme is omitted if it's http, port is omitted if it's default for the scheme.
+    www. prefix is removed if it exists.
+    """
+    (scheme, hostName, port, _path, _query, _fragment) = parseURL(url)
+    return '.'.join(((scheme,) if scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
+
+def processOriginalURL(url):
     """Returns URL hash for the specified original URL.
     The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
     Scheme is converted to lower case, and, if it's not http, added to the beginning of the host name.
     The scheme of normalized URL is always http.
-    Username and password are dropped, if specified.
+    Username and password, if specified, are dropped.
     Host name is converted to lower case, www. prefix is removed if it exists.
     Port is dropped, if it's default for the scheme.
     ? is dropped if no parameters are specified.
     # is dropped if no fragment is specified.
     Trailing / is dropped if there's no parameters or fragment.
     For example, URL HTTPS://username:password@www.Some.Host.com:443/some/path?#
-    is normalized to http://username@https.some.host.com/some/path
+    is normalized to http://https.some.host.com/some/path
     """
-    (scheme, _userName, hostName, port, path, query, fragment) = parseURL(url)
+    (scheme, hostName, port, path, query, fragment) = parseURL(url)
     netloc = ''.join((('%s.' % scheme) if scheme != HTTP else '', hostName, (':%d' % port) if port else ''))
     return getUrlHash(HTTP, netloc, path, query, fragment)
 
-def processMirrorURL(host, path, mirrorSuffix): # ToDo: Rename to mirrorUrlHash
+def processMirrorURL(host, path, mirrorSuffix):
     """Returns URL hash for the specified mirror URL and mirrorSuffix of the particular mirror site.
     The URL host name MUST end with .mirrorSuffix (case insensitive).
     The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
@@ -128,12 +122,16 @@ def processMirrorURL(host, path, mirrorSuffix): # ToDo: Rename to mirrorUrlHash
     is normalized to http://https.some.host.com:8443/some/path
     """
     assert mirrorSuffix
-    (_scheme, _userName, hostName, _port, path, query, fragment) = parseURL('http://' + host + path)
-    assert hostName.endswith(mirrorSuffix.lower())
+    (_scheme, hostName, _port, path, query, fragment) = parseURL(HTTP + '://' + host + path)
+    if not hostName.endswith(mirrorSuffix.lower()):
+        return (None, None)
     hostName = hostName[:-len(mirrorSuffix) - 1]
     tokens = hostName.split('.')
-    netloc = '%s:%s' % ('.'.join(tokens[:-1]), tokens[-1]) if tokens[-1].isdigit() else hostName
-    return getUrlHash(HTTP, netloc, path, query, fragment)
+    if tokens[-1].isdigit():
+        netloc = '%s:%s' % ('.'.join(tokens[:-1]), tokens[-1])
+    else:
+        netloc = hostName
+    return (hostName, getUrlHash(HTTP, netloc, path, query, fragment))
 
 class MagicMirrorDatabase(object): # abstract
     """Database access interface."""
@@ -159,14 +157,12 @@ class MagicMirrorDatabase(object): # abstract
     def loadData(self, key):
         raise NotImplementedError
 
-    def getDataSize(self, key):
-        raise NotImplementedError
-
 class MagicMirrorFileDatabase(MagicMirrorDatabase):
 
     URL_DATABASE = 'urls'
     CONTENT_DATABASE = 'data'
     LATEST_LINK = 'latest'
+    NUM_FIELDS = 4
 
     def __init__(self, location):
         MagicMirrorDatabase.__init__(self, location)
@@ -182,10 +178,18 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             makedirs(dirName)
         return join(dirName, hashFileName)
 
-    def setLocation(self, hostName, timeStamp):
+    def setLocation(self, hostName, timeStamp = None):
         self.mirrorDir = join(self.location, hostName)
-        self.targetDir = join(self.mirrorDir, timeStamp)
-        print(self.targetDir)
+        if timeStamp:
+            self.targetDir = join(self.mirrorDir, timeStamp)
+        else:
+            latest = join(self.mirrorDir, self.LATEST_LINK)
+            if islink(latest) or isdir(latest):
+                self.targetDir = latest
+            else:
+                self.targetDir = max((join(self.mirrorDir, d) for d in listdir(self.mirrorDir)), key = getmtime, default = self.mirrorDir)
+        if timeStamp:
+            print(self.targetDir)
         self.contentDatabaseDir = join(self.targetDir, self.CONTENT_DATABASE)
         self.urlDatabaseDir = join(self.targetDir, self.URL_DATABASE)
 
@@ -203,6 +207,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             print("DONE, linking unsupported")
 
     def saveURL(self, key, *args):
+        assert len(args) == self.NUM_FIELDS
         with open(self.getFileName(self.urlDatabaseDir, key, True), 'w') as f:
             f.write('\n'.join(args + ('',)))
 
@@ -210,7 +215,8 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         fileName = self.getFileName(self.urlDatabaseDir, key)
         if isfile(fileName):
             with open(fileName, 'r') as f:
-                return tuple(line.strip() for line in f.readlines())
+                return tuple(line.strip() for line in f.readlines())[:self.NUM_FIELDS]
+        return (None,) * self.NUM_FIELDS
 
     def saveData(self, key, sourceStream):
         with open(self.getFileName(self.contentDatabaseDir, key, True), 'wb') as f:
@@ -225,11 +231,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         fileName = self.getFileName(self.contentDatabaseDir, key)
         if isfile(fileName):
             return (getsize(fileName), open(fileName, 'rb'))
-        return None
-
-    def getDataSize(self, key):
-        fileName = self.getFileName(self.contentDatabaseDir, key)
-        return getsize(fileName) if isfile(fileName) else None
+        return (None, None)
 
 class MagicMirror(object):
     def __init__(self, databaseLocation, databaseClass = MagicMirrorFileDatabase):
@@ -249,12 +251,12 @@ class MagicMirror(object):
                     tempHash.update(chunk)
                 if contentLength:
                     contentLength = int(contentLength)
-                    assert contentLength == tempFile.tell() # ToDo: May it fail actually?
+                    assert contentLength == tempFile.tell()
                 else:
                     contentLength = tempFile.tell()
                     assert contentLength
                 contentHash = dataHash(tempHash)
-                dataSize = self.database.getDataSize(contentHash)
+                (dataSize, _dataStream) = self.database.loadData(contentHash)
                 if dataSize == contentLength:
                     print("exists, match", end = ' ')
                 else:
@@ -267,9 +269,8 @@ class MagicMirror(object):
                     assert written == contentLength
             print("OK")
             urlHash = processOriginalURL(url)
-            urlInfo = self.database.loadURL(urlHash)
-            if urlInfo:
-                (oldURL, oldContentType, oldContentLength, oldContentHash) = urlInfo # pylint: disable=W0633
+            (oldURL, oldContentType, oldContentLength, oldContentHash) = self.database.loadURL(urlHash)
+            if oldURL:
                 # ToDo: Do something better with this
                 print("Overwriting URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
             self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
@@ -284,12 +285,12 @@ class MagicMirror(object):
         dataHash('abcd')
         assert dataHash('abcd') == 'e2fc714c4727ee9395f324cd2e7f331f'
         # processHostName
-        assert processHostName('Http://Some.Host.com') == 'Some.Host.com'
-        assert processHostName('hTtps://wWw.SOME.HOST.COM') == 'https.SOME.HOST.COM'
-        assert processHostName('htTp://Some.Host.com:80') == 'Some.Host.com'
-        assert processHostName('httP://Some.Host.com:8080') == 'Some.Host.com.8080'
-        assert processHostName('httpS://Some.Host.com:443') == 'https.Some.Host.com'
-        assert processHostName('HTTPS://wWw.Some.Host.com:8443') == 'https.Some.Host.com.8443'
+        assert processHostName('Http://Some.Host.com') == 'some.host.com'
+        assert processHostName('hTtps://wWw.SOME.HOST.COM') == 'https.some.host.com'
+        assert processHostName('htTp://Some.Host.com:80') == 'some.host.com'
+        assert processHostName('httP://Some.Host.com:8080') == 'some.host.com.8080'
+        assert processHostName('httpS://Some.Host.com:443') == 'https.some.host.com'
+        assert processHostName('HTTPS://wWw.Some.Host.com:8443') == 'https.some.host.com.8443'
         # processOriginalURL
         assert processOriginalURL('http://wWw.Some.Host.com') == dataHash('http://some.host.com')
         assert processOriginalURL('HTTPS://SOME.HOST.COM') == dataHash('http://https.some.host.com')
@@ -323,12 +324,15 @@ class MagicMirror(object):
         print("OK")
         return 0
 
+WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--spider', '--delete-after')
+WGET_URL_PREFIX = b'--'
 def wgetUrlSource(sourceURL): # generator
-    WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--spider', '--delete-after')
-    WGET_URL_PREFIX = '--'
-    wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT, universal_newlines = True)
-    for url in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
-        yield url
+    wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT)
+    for urlBytes in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
+        try:
+            yield urlBytes.decode('utf-8')#, error = 'replace') # ToDo
+        except Exception as e:
+            print("ERROR decoding URL %r: %s" % (urlBytes, e))
     if wget.poll() is None:
         print("Terminating...")
         wget.wait()
@@ -344,20 +348,20 @@ class MagicMirrorCrawler(MagicMirror):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
         print('\n%s ->' % sourceURL, end = ' ')
         self.database.setLocation(processHostName(sourceURL), timeStamp)
+        urlCache = set()
         try:
             for url in self.urlSource(sourceURL):
-                self.downloadURL(url)
+                if url not in urlCache:
+                    self.downloadURL(url)
+                    urlCache.add(url)
             self.database.markLatest()
         except Exception as e:
             print("ERROR:", e)
             print(format_exc())
 
     def run(self, sourceURLs):
-        cache = set()
         for sourceURL in sourceURLs:
-            if sourceURL not in cache:
-                self.crawl(sourceURL)
-                cache.add(sourceURL)
+            self.crawl(sourceURL)
 
 class MagicMirrorServer(MagicMirror):
     def __init__(self, databaseLocation, mirrorSuffix):
@@ -365,15 +369,16 @@ class MagicMirrorServer(MagicMirror):
         self.mirrorSuffix = mirrorSuffix
 
     def serve(self, host, path):
-        urlHash = processMirrorURL(host, path, self.mirrorSuffix)
-        if not urlHash:
-            return None
-        urlInfo = self.database.loadURL(urlHash)
-        if urlInfo:
-            (url, contentType, contentLength, contentHash) = urlInfo
-            (contentSize, contentStream) = self.database.loadData(contentHash)
-            assert contentSize == contentLength
-            return (url, contentType, contentLength, contentStream)
+        (hostName, urlHash) = processMirrorURL(host, path, self.mirrorSuffix)
+        if hostName:
+            self.database.setLocation(hostName)
+            (url, contentType, contentLength, contentHash) = self.database.loadURL(urlHash)
+            if url:
+                contentLength = int(contentLength)
+                (contentSize, contentStream) = self.database.loadData(contentHash)
+                assert contentSize == contentLength
+                return (url, contentType, contentLength, contentStream)
+        return (None, None, None, None)
 
 class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
     magicMirrorServer = None
@@ -388,10 +393,9 @@ class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write('404')
 
     def do_GET(self):
-        urlInfo = self.magicMirrorServer.serve(self.headers['host'], self.path) # ToDo: Log the headers data
-        if not urlInfo:
+        (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(self.headers['host'], self.path) # ToDo: Log the headers data
+        if not url:
             self.send404()
-        (_url, contentType, contentLength, contentStream) = urlInfo
         with contentStream:
             self.send_response(200)
             self.send_header('Content-Type', contentType)
