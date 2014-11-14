@@ -1,25 +1,24 @@
 #!/usr/bin/python
-from binascii import hexlify
 from datetime import datetime
 from getopt import getopt
-from hashlib import sha256 as dbHash
+from hashlib import md5 as dbHash
 from os import fdopen, makedirs, remove
 from os.path import getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
-from urlparse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
-from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-stdout = fdopen(stdout.fileno(), 'w', 0)
+stdout = fdopen(stdout.fileno(), 'wb', 0)
 
 try: # Requests HTTP library
     import requests
     if requests.__version__.split('.') < ['2', '3', '0']:
         raise ImportError('Requests version %s < 2.3.0' % requests.__version__)
-except ImportError, ex:
-    print "%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex)
+except ImportError as ex:
+    print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
 
 try: # Filesystem symbolic links configuration
@@ -31,9 +30,9 @@ except ImportError:
         def symlink(source, linkName):
             if not dll.CreateSymbolicLinkW(linkName, source, int(isdir(source))):
                 raise OSError("code %d" % dll.GetLastError())
-    except Exception, ex:
+    except Exception as ex:
         symlink = None
-        print "%s: %s\nWARNING: Filesystem links will not be available.\nPlease run on UNIX or Windows Vista or later with NTFS.\n" % (ex.__class__.__name__, ex)
+        print("%s: %s\nWARNING: Filesystem links will not be available.\nPlease run on UNIX or Windows Vista or later with NTFS.\n" % (ex.__class__.__name__, ex))
 
 DATA_CHUNK = 10 * 1024 * 1024 # 10 megabytes
 
@@ -49,7 +48,7 @@ WWW_PREFIX = 'www.'
 
 def dataHash(data):
     """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
-    return hexlify((data if hasattr(data, 'digest') else dbHash(data)).digest())
+    return (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
 
 def parseURL(url, retainHostNameCase = False):
     """Normalizes the specified URL and returns (scheme, userName, hostName, port, path, query, fragment) tuple.
@@ -62,7 +61,7 @@ def parseURL(url, retainHostNameCase = False):
     (scheme, netloc, path, query, fragment) = splitURL
     scheme = scheme.lower()
     userName = splitURL.username
-    hostName = splitURL.hostname # already lower case
+    hostName = splitURL.hostname or '' # already lower case
     if retainHostNameCase:
         index = netloc.lower().index(hostName)
         hostName = netloc[index : index + len(hostName)]
@@ -128,7 +127,7 @@ def processMirrorURL(host, path, mirrorSuffix): # ToDo: Rename to mirrorUrlHash
     is normalized to http://https.some.host.com:8443/some/path
     """
     assert mirrorSuffix
-    (_scheme, _userName, hostName, _port, path, query, fragment) = parseURL(host + path)
+    (_scheme, _userName, hostName, _port, path, query, fragment) = parseURL('http://' + host + path)
     assert hostName.endswith(mirrorSuffix.lower())
     hostName = hostName[:-len(mirrorSuffix) - 1]
     tokens = hostName.split('.')
@@ -185,7 +184,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
     def setLocation(self, hostName, timeStamp):
         self.mirrorDir = join(self.location, hostName)
         self.targetDir = join(self.mirrorDir, timeStamp)
-        print self.targetDir
+        print(self.targetDir)
         self.contentDatabaseDir = join(self.targetDir, self.CONTENT_DATABASE)
         self.urlDatabaseDir = join(self.targetDir, self.URL_DATABASE)
 
@@ -196,11 +195,11 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
                 if islink(linkName):
                     remove(linkName)
                     symlink(self.targetDir, linkName)
-                    print "DONE, set as latest"
-            except Exception, e:
-                print "DONE, error linking: %s" % e
+                    print("DONE, set as latest")
+            except Exception as e:
+                print("DONE, error linking: %s" % e)
         else:
-            print "DONE, linking unsupported"
+            print("DONE, linking unsupported")
 
     def saveURL(self, key, *args):
         with open(self.getFileName(self.urlDatabaseDir, key), 'wb') as f:
@@ -236,13 +235,13 @@ class MagicMirror(object):
         self.database = databaseClass(databaseLocation)
 
     def downloadURL(self, url):
-        print url,
+        print(url, end = ' ')
         try:
             request = requests.get(url, stream = True)
             request.headers['blah-test'] # ToDo: test, remove
             contentType = request.headers['content-type']
             contentLength = request.headers['content-length']
-            print contentType, contentLength,
+            print(contentType, contentLength, end=' ')
             tempHash = dbHash()
             with SpooledTemporaryFile(DATA_CHUNK) as tempFile:
                 while True:
@@ -258,30 +257,31 @@ class MagicMirror(object):
                 contentHash = dataHash(tempHash)
                 dataSize = self.database.getDataSize(contentHash)
                 if dataSize == contentLength:
-                    print "exists, match",
+                    print("exists, match", end=' ')
                 else:
                     if dataSize:
-                        print "DAMAGED, OVERWRITING",
+                        print("DAMAGED, OVERWRITING", end=' ')
                     else:
-                        print "saving",
+                        print("saving", end=' ')
                     tempFile.seek(0)
                     written = self.database.saveData(contentHash, tempFile)
                     assert written == contentLength
-            print "OK"
+            print("OK")
             urlHash = processOriginalURL(url)
             urlInfo = self.database.loadURL(urlHash)
             if urlInfo:
                 (oldURL, oldContentType, oldContentLength, oldContentHash) = urlInfo # pylint: disable=W0633
                 # ToDo: Do something better with this
-                print "Overwriting URL %s %s %s, content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES')
+                print("Overwriting URL %s %s %s, content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
             self.database.saveURL(urlHash, url, contentType, contentLength, contentHash)
-        except Exception, e:
-            print "\nERROR: %s" % e
+        except Exception as e:
+            print("\nERROR: %s" % e)
 
     @staticmethod
     def test():
         # dataHash
-        assert dataHash('abcd') == '88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589'
+        dataHash('abcd')
+        assert dataHash('abcd') == 'e2fc714c4727ee9395f324cd2e7f331f'
         # processHostName
         assert processHostName('Http://Some.Host.com') == 'Some.Host.com'
         assert processHostName('hTtps://wWw.SOME.HOST.COM') == 'https.SOME.HOST.COM'
@@ -307,8 +307,8 @@ class MagicMirror(object):
         # processMirrorURL
         assert processMirrorURL('wWw.Some.Host.com.my.archive.com', '/', 'My.Archive.com') == dataHash('http://some.host.com')
         assert processMirrorURL('SOME.HOST.COM.my.archive.com', '/', 'My.Archive.com') == dataHash('http://some.host.com')
-        assert processMirrorURL('Some.Host.com.My.Archive.com', '/', 'my.archive.com') == dataHash('http://userName@some.host.com')
-        assert processMirrorURL('wWw.somE.hosT.COM.my.archive.com', '/', 'My.Archive.com') == dataHash('http://userName@some.host.com')
+        assert processMirrorURL('Some.Host.com.My.Archive.com', '/', 'my.archive.com') == dataHash('http://some.host.com')
+        assert processMirrorURL('wWw.somE.hosT.COM.my.archive.com', '/', 'My.Archive.com') == dataHash('http://some.host.com')
         assert processMirrorURL('SOME.HOST.COM.My.Archive.com:443', '/', 'my.archive.com') == dataHash('http://some.host.com')
         assert processMirrorURL('SOME.HOST.COM.8443.my.archive.com', '/', 'My.Archive.com') == dataHash('http://some.host.com:8443')
         assert processMirrorURL('https.Some.Host.com.My.Archive.com', '/?', 'my.archive.com') == dataHash('http://https.some.host.com')
@@ -319,6 +319,7 @@ class MagicMirror(object):
         assert processMirrorURL('www.Some.Host.com.443.my.archive.com:8080', '/some/path?#', 'My.Archive.com') == dataHash('http://some.host.com:443/some/path')
         assert processMirrorURL('www.FTP.Some.Host.com.My.Archive.com:443', '/some/path?abc=def&klm=nop#', 'my.archive.com') == dataHash('http://ftp.some.host.com/some/path?abc=def&klm=nop')
         assert processMirrorURL('www.Some.Host.com.my.archive.com:443', '/some/path?abc=def&klm=nop#fig25', 'My.Archive.com') == dataHash('http://some.host.com/some/path?abc=def&klm=nop#fig25')
+        print("OK")
         return 0
 
 def wgetUrlSource(sourceURL): # generator
@@ -328,7 +329,7 @@ def wgetUrlSource(sourceURL): # generator
     for url in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
         yield url
     if wget.poll() is None:
-        print "Terminating..."
+        print("Terminating...")
         wget.wait()
     if wget.returncode:
         raise Exception("wget error: %d" % wget.returncode)
@@ -340,14 +341,14 @@ class MagicMirrorCrawler(MagicMirror):
 
     def crawl(self, sourceURL):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
-        print '\n%s -> ,' % sourceURL
+        print('\n%s -> ,' % sourceURL)
         self.database.setLocation(processHostName(sourceURL), timeStamp)
         try:
             for url in self.urlSource(sourceURL):
                 self.downloadURL(url)
             self.database.markLatest()
-        except Exception, e:
-            print "ERROR:", e
+        except Exception as e:
+            print("ERROR:", e)
 
     def run(self, sourceURLs):
         for sourceURL in sourceURLs:
