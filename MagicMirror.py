@@ -7,6 +7,7 @@ from os.path import getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
+from traceback import format_exc
 from urllib.parse import urlsplit, urlunsplit
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -168,7 +169,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
     LATEST_LINK = 'latest'
 
     def __init__(self, location):
-        MagicMirrorDatabase.__init__(location)
+        MagicMirrorDatabase.__init__(self, location)
         self.mirrorDir = None
         self.targetDir = None
         self.contentDatabaseDir = None
@@ -202,7 +203,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             print("DONE, linking unsupported")
 
     def saveURL(self, key, *args):
-        with open(self.getFileName(self.urlDatabaseDir, key), 'wb') as f:
+        with open(self.getFileName(self.urlDatabaseDir, key, True), 'w') as f:
             f.write('\n'.join(args + ('',)))
 
     def loadURL(self, key):
@@ -212,7 +213,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
                 return tuple(line.strip() for line in f.readlines())
 
     def saveData(self, key, sourceStream):
-        with open(self.getFileName(self.contentDatabaseDir, key), 'wb') as f:
+        with open(self.getFileName(self.contentDatabaseDir, key, True), 'wb') as f:
             while True:
                 data = sourceStream.read(DATA_CHUNK)
                 if not data:
@@ -238,31 +239,28 @@ class MagicMirror(object):
         print(url, end = ' ')
         try:
             request = requests.get(url, stream = True)
-            request.headers['blah-test'] # ToDo: test, remove
             contentType = request.headers['content-type']
-            contentLength = request.headers['content-length']
-            print(contentType, contentLength, end=' ')
+            contentLength = request.headers.get('content-length', '')
+            print(contentType, contentLength, 'bytes', end = ' ')
             tempHash = dbHash()
             with SpooledTemporaryFile(DATA_CHUNK) as tempFile:
-                while True:
-                    data = request.content.read(DATA_CHUNK)
-                    if not data:
-                        break
-                    tempFile.write(data)
-                    tempHash.update(data)
+                for chunk in request.iter_content(DATA_CHUNK):
+                    tempFile.write(chunk)
+                    tempHash.update(chunk)
                 if contentLength:
                     assert contentLength == tempFile.tell() # ToDo: May it fail actually?
                 else:
                     contentLength = tempFile.tell()
+                    assert contentLength
                 contentHash = dataHash(tempHash)
                 dataSize = self.database.getDataSize(contentHash)
                 if dataSize == contentLength:
-                    print("exists, match", end=' ')
+                    print("exists, match", end = ' ')
                 else:
                     if dataSize:
-                        print("DAMAGED, OVERWRITING", end=' ')
+                        print("DAMAGED, OVERWRITING", end = ' ')
                     else:
-                        print("saving", end=' ')
+                        print("saving", end = ' ')
                     tempFile.seek(0)
                     written = self.database.saveData(contentHash, tempFile)
                     assert written == contentLength
@@ -273,9 +271,10 @@ class MagicMirror(object):
                 (oldURL, oldContentType, oldContentLength, oldContentHash) = urlInfo # pylint: disable=W0633
                 # ToDo: Do something better with this
                 print("Overwriting URL %s %s %s, content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
-            self.database.saveURL(urlHash, url, contentType, contentLength, contentHash)
+            self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
         except Exception as e:
             print("\nERROR: %s" % e)
+            print(format_exc())
 
     @staticmethod
     def test():
@@ -325,7 +324,7 @@ class MagicMirror(object):
 def wgetUrlSource(sourceURL): # generator
     WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--spider', '--delete-after')
     WGET_URL_PREFIX = '--'
-    wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT)
+    wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT, universal_newlines = True)
     for url in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
         yield url
     if wget.poll() is None:
@@ -341,7 +340,7 @@ class MagicMirrorCrawler(MagicMirror):
 
     def crawl(self, sourceURL):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
-        print('\n%s -> ,' % sourceURL)
+        print('\n%s ->' % sourceURL, end = ' ')
         self.database.setLocation(processHostName(sourceURL), timeStamp)
         try:
             for url in self.urlSource(sourceURL):
@@ -349,6 +348,7 @@ class MagicMirrorCrawler(MagicMirror):
             self.database.markLatest()
         except Exception as e:
             print("ERROR:", e)
+            print(format_exc())
 
     def run(self, sourceURLs):
         for sourceURL in sourceURLs:
