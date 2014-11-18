@@ -46,93 +46,6 @@ STANDARD_PORTS = { HTTP: 80, HTTPS: 443, FTP: 21 }
 
 WWW_PREFIX = 'www.'
 
-def dataHash(data):
-    """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
-    return (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
-
-def parseURL(url):
-    """Normalizes the specified URL and returns (scheme, hostName, port, path, query, fragment) tuple.
-    scheme is converted to lower case.
-    Username and password information is dropped.
-    hostName is converted to lower case, www. prefix is removed if it exists.
-    If specified port is default for the specified scheme, it's set to None.
-    """
-    splitURL = urlsplit(url)
-    (scheme, _netloc, path, query, fragment) = splitURL
-    scheme = scheme.lower()
-    hostName = splitURL.hostname or '' # always lower case
-    if hostName.startswith(WWW_PREFIX):
-        hostName = hostName[len(WWW_PREFIX):]
-    port = splitURL.port
-    if port and port == STANDARD_PORTS.get(scheme):
-        port = None
-    return (scheme, hostName, port, path, query, fragment)
-
-def unparseURL(scheme, netloc, path, query, fragment):
-    """Joins URL components together.
-    In case of no query and no fragment, resulting trailing slash is removed.
-    """
-    url = urlunsplit((scheme, netloc, path, query, fragment))
-    return url if query or fragment or not url.endswith('/') else url[:-1]
-
-def getUrlHash(scheme, netloc, path, query, fragment):
-    """Returns URL hash for the specified URL parameters."""
-    return dataHash(unparseURL(scheme, netloc, path, query, fragment))
-
-def processHostName(url):
-    """Returns mirror host name for the specified url, without mirror suffix.
-    The resulting host name is [scheme.]host.name[.port], all lower case.
-    Scheme is omitted if it's http, port is omitted if it's default for the scheme.
-    www. prefix is removed if it exists.
-    """
-    (scheme, hostName, port, _path, _query, _fragment) = parseURL(url)
-    return '.'.join(((scheme,) if scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
-
-def processOriginalURL(url):
-    """Returns URL hash for the specified original URL.
-    The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
-    Scheme is converted to lower case, and, if it's not http, added to the beginning of the host name.
-    The scheme of normalized URL is always http.
-    Username and password, if specified, are dropped.
-    Host name is converted to lower case, www. prefix is removed if it exists.
-    Port is dropped, if it's default for the scheme.
-    ? is dropped if no parameters are specified.
-    # is dropped if no fragment is specified.
-    Trailing / is dropped if there's no parameters or fragment.
-    For example, URL HTTPS://username:password@www.Some.Host.com:443/some/path?#
-    is normalized to http://https.some.host.com/some/path
-    """
-    (scheme, hostName, port, path, query, fragment) = parseURL(url)
-    netloc = ''.join((('%s.' % scheme) if scheme != HTTP else '', hostName, (':%d' % port) if port else ''))
-    return getUrlHash(HTTP, netloc, path, query, fragment)
-
-def processMirrorURL(host, path, mirrorSuffix):
-    """Returns URL hash for the specified mirror URL and mirrorSuffix of the particular mirror site.
-    The URL host name MUST end with .mirrorSuffix (case insensitive).
-    The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
-    The URL scheme and port are ignored.
-    Password is dropped, if specified.
-    Host name is converted to lower case, www. prefix is removed if it exists, mirrorSuffix is also removed.
-    If the last token of the remaining host name is digital, it's conveted to port number.
-    Port is dropped, if it's default for the scheme.
-    ? is dropped if no parameters are specified.
-    # is dropped if no fragment is specified.
-    Trailing / is dropped if there's no parameters or fragment.
-    For example, URL https://username:password@https.Some.Host.com.8443.my.archive.com:8080/some/path?#
-    is normalized to http://https.some.host.com:8443/some/path
-    """
-    assert mirrorSuffix
-    (_scheme, hostName, _port, path, query, fragment) = parseURL(HTTP + '://' + host + path)
-    if not hostName.endswith(mirrorSuffix.lower()):
-        return (None, None)
-    hostName = hostName[:-len(mirrorSuffix) - 1]
-    tokens = hostName.split('.')
-    if tokens[-1].isdigit():
-        netloc = '%s:%s' % ('.'.join(tokens[:-1]), tokens[-1])
-    else:
-        netloc = hostName
-    return (hostName, getUrlHash(HTTP, netloc, path, query, fragment))
-
 class MagicMirrorDatabase(object): # abstract
     """Database access interface."""
     def __init__(self, location):
@@ -234,8 +147,102 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         return (None, None)
 
 class MagicMirror(object):
-    def __init__(self, databaseLocation, databaseClass = MagicMirrorFileDatabase):
+    def __init__(self, databaseLocation, databaseClass = MagicMirrorFileDatabase, mirrorSuffix = None):
         self.database = databaseClass(databaseLocation)
+        self.mirrorSuffix = mirrorSuffix
+
+    @staticmethod
+    def dataHash(data):
+        """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
+        return (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
+
+    @staticmethod
+    def parseURL(url):
+        """Normalizes the specified URL and returns (scheme, hostName, port, path, query, fragment) tuple.
+        scheme is converted to lower case.
+        Username and password information is dropped.
+        hostName is converted to lower case, www. prefix is removed if it exists.
+        If specified port is default for the specified scheme, it's set to None.
+        """
+        splitURL = urlsplit(url)
+        (scheme, _netloc, path, query, fragment) = splitURL
+        scheme = scheme.lower()
+        hostName = splitURL.hostname or '' # always lower case
+        if hostName.startswith(WWW_PREFIX):
+            hostName = hostName[len(WWW_PREFIX):]
+        port = splitURL.port
+        if port and port == STANDARD_PORTS.get(scheme):
+            port = None
+        return (scheme, hostName, port, path, query, fragment)
+
+    @staticmethod
+    def unparseURL(scheme, netloc, path, query, fragment):
+        """Joins URL components together.
+        In case of no query and no fragment, resulting trailing slash is removed.
+        """
+        url = urlunsplit((scheme, netloc, path, query, fragment))
+        return url if query or fragment or not url.endswith('/') else url[:-1]
+
+    @classmethod
+    def getUrlHash(cls, scheme, netloc, path, query, fragment):
+        """Returns URL hash for the specified URL parameters."""
+        return cls.dataHash(cls.unparseURL(scheme, netloc, path, query, fragment))
+
+    @classmethod
+    def processHostName(cls, url):
+        """Returns mirror host name for the specified url, without mirror suffix.
+        The resulting host name is [scheme.]host.name[.port], all lower case.
+        Scheme is omitted if it's http, port is omitted if it's default for the scheme.
+        www. prefix is removed if it exists.
+        """
+        (scheme, hostName, port, _path, _query, _fragment) = cls.parseURL(url)
+        return '.'.join(((scheme,) if scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
+
+    @classmethod
+    def processOriginalURL(cls, url):
+        """Returns URL hash for the specified original URL.
+        The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
+        Scheme is converted to lower case, and, if it's not http, added to the beginning of the host name.
+        The scheme of normalized URL is always http.
+        Username and password, if specified, are dropped.
+        Host name is converted to lower case, www. prefix is removed if it exists.
+        Port is dropped, if it's default for the scheme.
+        ? is dropped if no parameters are specified.
+        # is dropped if no fragment is specified.
+        Trailing / is dropped if there's no parameters or fragment.
+        For example, URL HTTPS://username:password@www.Some.Host.com:443/some/path?#
+        is normalized to http://https.some.host.com/some/path
+        """
+        (scheme, hostName, port, path, query, fragment) = cls.parseURL(url)
+        netloc = ''.join((('%s.' % scheme) if scheme != HTTP else '', hostName, (':%d' % port) if port else ''))
+        return cls.getUrlHash(HTTP, netloc, path, query, fragment)
+
+    def processMirrorURL(self, host, path):
+        """Returns URL hash for the specified mirror URL and mirrorSuffix of the particular mirror site.
+        The URL host name MUST end with .mirrorSuffix (case insensitive).
+        The URL itself is normalized as follows to provide consistent hash values for equivalent URLs.
+        The URL scheme and port are ignored.
+        Password is dropped, if specified.
+        Host name is converted to lower case, www. prefix is removed if it exists, mirrorSuffix is also removed.
+        If the last token of the remaining host name is digital, it's conveted to port number.
+        Port is dropped, if it's default for the scheme.
+        ? is dropped if no parameters are specified.
+        # is dropped if no fragment is specified.
+        Trailing / is dropped if there's no parameters or fragment.
+        For example, URL https://username:password@https.Some.Host.com.8443.my.archive.com:8080/some/path?#
+        is normalized to http://https.some.host.com:8443/some/path
+        """
+        assert self.mirrorSuffix
+        (_scheme, hostName, _port, path, query, fragment) = self.parseURL(HTTP + '://' + host + path)
+        if not hostName.endswith(self.mirrorSuffix.lower()):
+            return (None, None)
+        hostName = hostName[:-len(self.mirrorSuffix) - 1]
+        tokens = hostName.split('.')
+        if tokens[-1].isdigit():
+            netloc = '%s:%s' % ('.'.join(tokens[:-1]), tokens[-1])
+        else:
+            netloc = hostName
+        return (hostName, self.getUrlHash(HTTP, netloc, path, query, fragment))
 
     def downloadURL(self, url):
         try:
@@ -255,7 +262,7 @@ class MagicMirror(object):
                 else:
                     contentLength = tempFile.tell()
                     assert contentLength
-                contentHash = dataHash(tempHash)
+                contentHash = self.dataHash(tempHash)
                 (dataSize, _dataStream) = self.database.loadData(contentHash)
                 if dataSize == contentLength:
                     print("exists, match", end = ' ')
@@ -268,7 +275,7 @@ class MagicMirror(object):
                     written = self.database.saveData(contentHash, tempFile)
                     assert written == contentLength
             print("OK")
-            urlHash = processOriginalURL(url)
+            urlHash = self.processOriginalURL(url)
             (oldURL, oldContentType, oldContentLength, oldContentHash) = self.database.loadURL(urlHash)
             if oldURL:
                 # ToDo: Do something better with this
@@ -281,46 +288,46 @@ class MagicMirror(object):
 
     @staticmethod
     def test():
+        magicMirror = MagicMirror('', mirrorSuffix = 'my.archive.com')
         # dataHash
-        dataHash('abcd')
-        assert dataHash('abcd') == 'e2fc714c4727ee9395f324cd2e7f331f'
+        assert magicMirror.dataHash('abcd') == 'e2fc714c4727ee9395f324cd2e7f331f'
         # processHostName
-        assert processHostName('Http://Some.Host.com') == 'some.host.com'
-        assert processHostName('hTtps://wWw.SOME.HOST.COM') == 'https.some.host.com'
-        assert processHostName('htTp://Some.Host.com:80') == 'some.host.com'
-        assert processHostName('httP://Some.Host.com:8080') == 'some.host.com.8080'
-        assert processHostName('httpS://Some.Host.com:443') == 'https.some.host.com'
-        assert processHostName('HTTPS://wWw.Some.Host.com:8443') == 'https.some.host.com.8443'
+        assert magicMirror.processHostName('Http://Some.Host.com') == 'some.host.com'
+        assert magicMirror.processHostName('hTtps://wWw.SOME.HOST.COM') == 'https.some.host.com'
+        assert magicMirror.processHostName('htTp://Some.Host.com:80') == 'some.host.com'
+        assert magicMirror.processHostName('httP://Some.Host.com:8080') == 'some.host.com.8080'
+        assert magicMirror.processHostName('httpS://Some.Host.com:443') == 'https.some.host.com'
+        assert magicMirror.processHostName('HTTPS://wWw.Some.Host.com:8443') == 'https.some.host.com.8443'
         # processOriginalURL
-        assert processOriginalURL('http://wWw.Some.Host.com') == dataHash('http://some.host.com')
-        assert processOriginalURL('HTTPS://SOME.HOST.COM') == dataHash('http://https.some.host.com')
-        assert processOriginalURL('Https://userName@Some.Host.com') == dataHash('http://https.some.host.com')
-        assert processOriginalURL('Https://userName:password@wWw.somE.hosT.COM') == dataHash('http://https.some.host.com')
-        assert processOriginalURL('HTTPS://SOME.HOST.COM:443') == dataHash('http://https.some.host.com')
-        assert processOriginalURL('HTTPS://SOME.HOST.COM:8443') == dataHash('http://https.some.host.com:8443')
-        assert processOriginalURL('http://wWw.Some.Host.com/?') == dataHash('http://some.host.com')
-        assert processOriginalURL('http://wWw.Some.Host.com/#') == dataHash('http://some.host.com')
-        assert processOriginalURL('http://wWw.Some.Host.com/?#') == dataHash('http://some.host.com')
-        assert processOriginalURL('http://wWw.Some.Host.com/?#') == dataHash('http://some.host.com')
-        assert processOriginalURL('http://wWw.Some.Host.com/?#') == dataHash('http://some.host.com')
-        assert processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?#') == dataHash('http://https.some.host.com/some/path')
-        assert processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?abc=def&klm=nop#') == dataHash('http://https.some.host.com/some/path?abc=def&klm=nop')
-        assert processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?abc=def&klm=nop#fig25') == dataHash('http://https.some.host.com/some/path?abc=def&klm=nop#fig25')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('HTTPS://SOME.HOST.COM') == magicMirror.dataHash('http://https.some.host.com')
+        assert magicMirror.processOriginalURL('Https://userName@Some.Host.com') == magicMirror.dataHash('http://https.some.host.com')
+        assert magicMirror.processOriginalURL('Https://userName:password@wWw.somE.hosT.COM') == magicMirror.dataHash('http://https.some.host.com')
+        assert magicMirror.processOriginalURL('HTTPS://SOME.HOST.COM:443') == magicMirror.dataHash('http://https.some.host.com')
+        assert magicMirror.processOriginalURL('HTTPS://SOME.HOST.COM:8443') == magicMirror.dataHash('http://https.some.host.com:8443')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com/?') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com/#') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com/?#') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com/?#') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('http://wWw.Some.Host.com/?#') == magicMirror.dataHash('http://some.host.com')
+        assert magicMirror.processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?#') == magicMirror.dataHash('http://https.some.host.com/some/path')
+        assert magicMirror.processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?abc=def&klm=nop#') == magicMirror.dataHash('http://https.some.host.com/some/path?abc=def&klm=nop')
+        assert magicMirror.processOriginalURL('HTTPS://username:password@www.Some.Host.com:443/some/path?abc=def&klm=nop#fig25') == magicMirror.dataHash('http://https.some.host.com/some/path?abc=def&klm=nop#fig25')
         # processMirrorURL
-        assert processMirrorURL('wWw.Some.Host.com.my.archive.com', '/', 'My.Archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('SOME.HOST.COM.my.archive.com', '/', 'My.Archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('Some.Host.com.My.Archive.com', '/', 'my.archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('wWw.somE.hosT.COM.my.archive.com', '/', 'My.Archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('SOME.HOST.COM.My.Archive.com:443', '/', 'my.archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('SOME.HOST.COM.8443.my.archive.com', '/', 'My.Archive.com') == ('some.host.com.8443', dataHash('http://some.host.com:8443'))
-        assert processMirrorURL('https.Some.Host.com.My.Archive.com', '/?', 'my.archive.com') == ('https.some.host.com', dataHash('http://https.some.host.com'))
-        assert processMirrorURL('FTP.Some.Host.com.my.archive.com', '/#', 'My.Archive.com') == ('ftp.some.host.com', dataHash('http://ftp.some.host.com'))
-        assert processMirrorURL('wWw.FTP.Some.Host.com.My.Archive.com', '/?#', 'my.archive.com') == ('ftp.some.host.com', dataHash('http://ftp.some.host.com'))
-        assert processMirrorURL('wWw.Some.Host.com.8080.my.archive.com', '/?#', 'My.Archive.com') == ('some.host.com.8080', dataHash('http://some.host.com:8080'))
-        assert processMirrorURL('wWw.Some.Host.com.My.Archive.com', '/?#', 'my.archive.com') == ('some.host.com', dataHash('http://some.host.com'))
-        assert processMirrorURL('www.Some.Host.com.443.my.archive.com:8080', '/some/path?#', 'My.Archive.com') == ('some.host.com.443', dataHash('http://some.host.com:443/some/path'))
-        assert processMirrorURL('www.FTP.Some.Host.com.My.Archive.com:443', '/some/path?abc=def&klm=nop#', 'my.archive.com') == ('ftp.some.host.com', dataHash('http://ftp.some.host.com/some/path?abc=def&klm=nop'))
-        assert processMirrorURL('www.Some.Host.com.my.archive.com:443', '/some/path?abc=def&klm=nop#fig25', 'My.Archive.com') == ('some.host.com', dataHash('http://some.host.com/some/path?abc=def&klm=nop#fig25'))
+        assert magicMirror.processMirrorURL('wWw.Some.Host.com.my.archive.com', '/') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('SOME.HOST.COM.my.archive.com', '/') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('Some.Host.com.My.Archive.com', '/') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('wWw.somE.hosT.COM.my.archive.com', '/') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('SOME.HOST.COM.My.Archive.com:443', '/') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('SOME.HOST.COM.8443.my.archive.com', '/') == ('some.host.com.8443', magicMirror.dataHash('http://some.host.com:8443'))
+        assert magicMirror.processMirrorURL('https.Some.Host.com.My.Archive.com', '/?') == ('https.some.host.com', magicMirror.dataHash('http://https.some.host.com'))
+        assert magicMirror.processMirrorURL('FTP.Some.Host.com.my.archive.com', '/#') == ('ftp.some.host.com', magicMirror.dataHash('http://ftp.some.host.com'))
+        assert magicMirror.processMirrorURL('wWw.FTP.Some.Host.com.My.Archive.com', '/?#') == ('ftp.some.host.com', magicMirror.dataHash('http://ftp.some.host.com'))
+        assert magicMirror.processMirrorURL('wWw.Some.Host.com.8080.my.archive.com', '/?#') == ('some.host.com.8080', magicMirror.dataHash('http://some.host.com:8080'))
+        assert magicMirror.processMirrorURL('wWw.Some.Host.com.My.Archive.com', '/?#') == ('some.host.com', magicMirror.dataHash('http://some.host.com'))
+        assert magicMirror.processMirrorURL('www.Some.Host.com.443.my.archive.com:8080', '/some/path?#') == ('some.host.com.443', magicMirror.dataHash('http://some.host.com:443/some/path'))
+        assert magicMirror.processMirrorURL('www.FTP.Some.Host.com.My.Archive.com:443', '/some/path?abc=def&klm=nop#') == ('ftp.some.host.com', magicMirror.dataHash('http://ftp.some.host.com/some/path?abc=def&klm=nop'))
+        assert magicMirror.processMirrorURL('www.Some.Host.com.my.archive.com:443', '/some/path?abc=def&klm=nop#fig25') == ('some.host.com', magicMirror.dataHash('http://some.host.com/some/path?abc=def&klm=nop#fig25'))
         print("OK")
         return 0
 
@@ -347,7 +354,7 @@ class MagicMirrorCrawler(MagicMirror):
     def crawl(self, sourceURL):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
         print('\n%s ->' % sourceURL, end = ' ')
-        self.database.setLocation(processHostName(sourceURL), timeStamp)
+        self.database.setLocation(self.processHostName(sourceURL), timeStamp)
         urlCache = set()
         try:
             for url in self.urlSource(sourceURL):
@@ -365,11 +372,10 @@ class MagicMirrorCrawler(MagicMirror):
 
 class MagicMirrorServer(MagicMirror):
     def __init__(self, databaseLocation, mirrorSuffix):
-        MagicMirror.__init__(self, databaseLocation)
-        self.mirrorSuffix = mirrorSuffix
+        MagicMirror.__init__(self, databaseLocation, mirrorSuffix)
 
     def serve(self, host, path):
-        (hostName, urlHash) = processMirrorURL(host, path, self.mirrorSuffix)
+        (hostName, urlHash) = self.processMirrorURL(host, path)
         if hostName:
             self.database.setLocation(hostName)
             (url, contentType, contentLength, contentHash) = self.database.loadURL(urlHash)
