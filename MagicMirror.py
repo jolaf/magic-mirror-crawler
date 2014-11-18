@@ -1,8 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 from datetime import datetime
 from hashlib import md5 as dbHash
-from os import fdopen, listdir, makedirs, remove
-from os.path import getmtime, getsize, isdir, isfile, islink, join
+from os import fdopen, listdir, makedirs, readlink, remove, symlink
+from os.path import basename, getmtime, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
@@ -21,18 +21,30 @@ except ImportError as ex:
     print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
 
-try: # Filesystem symbolic links configuration
-    from os import symlink # UNIX # pylint: disable=E0611
-except ImportError:
-    try:
-        from ctypes import windll
-        dll = windll.LoadLibrary('kernel32.dll')
-        def symlink(source, linkName):
-            if not dll.CreateSymbolicLinkW(linkName, source, int(isdir(source))):
-                raise OSError("code %d" % dll.GetLastError())
-    except Exception as ex:
-        symlink = None
-        print("%s: %s\nWARNING: Filesystem links will not be available.\nPlease run on UNIX or Windows Vista or later with NTFS.\n" % (ex.__class__.__name__, ex))
+TITLE = '\nMagicMirror v0.01 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+
+USAGE = '''Usage:
+python3 MagicMirror.py crawl databaseDir startURL startURL ...
+python3 MagicMirror.py serve databaseDir archiveDomainSuffix [port]
+python3 MagicMirror.py test
+
+In crawl mode the script crawls the specified start URLs recursively
+and saves the downloaded fiels into the database at specified location.
+
+In serve mode the scripts starts a primitive web server on the specified
+port number (80 if not specified), and serves the downloaded data on
+domain names with the specified suffix.
+
+Note: all the mirrored domains must be directed to that webserver using
+DNS, /etc/hosts or any other means.
+
+Examples:
+$ python3 MagicMirror.py crawl /home/User/mmDB http://some.site.com
+$ python3 MagicMirror.py crawl /home/User/mmDB https://other.site.com:444
+$ python3 MagicMirror.py serve /home/User/mmDB my.archive.com 8080 &
+$ wget http://some.site.com.my.archive.com:8080
+$ wget http://https.other.site.com.444.my.archive.com:8080
+'''
 
 DATA_CHUNK = 10 * 1024 * 1024 # 10 megabytes
 
@@ -68,6 +80,9 @@ class MagicMirrorDatabase(object): # abstract
         raise NotImplementedError
 
     def loadData(self, key):
+        raise NotImplementedError
+
+    def listURLs(self):
         raise NotImplementedError
 
 class MagicMirrorFileDatabase(MagicMirrorDatabase):
@@ -107,17 +122,16 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         self.urlDatabaseDir = join(self.targetDir, self.URL_DATABASE)
 
     def markLatest(self):
-        if symlink:
-            try:
-                linkName = join(self.mirrorDir, self.LATEST_LINK)
-                if islink(linkName):
-                    remove(linkName)
-                symlink(self.targetDir, linkName)
-                print("DONE, set as latest")
-            except Exception as e:
-                print("DONE, error linking: %s" % e)
-        else:
+        try:
+            linkName = join(self.mirrorDir, self.LATEST_LINK)
+            if islink(linkName):
+                remove(linkName)
+            symlink(self.targetDir, linkName)
+            print("DONE, set as latest")
+        except NotImplementedError:
             print("DONE, linking unsupported")
+        except Exception as e:
+            print("DONE, error linking: %s" % e)
 
     def saveURL(self, key, *args):
         assert len(args) == self.NUM_FIELDS
@@ -146,8 +160,25 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             return (getsize(fileName), open(fileName, 'rb'))
         return (None, None)
 
+    def listURLs(self):
+        ret = []
+        for url in listdir(self.location):
+            urlDir = join(self.location, url)
+            if not isdir(urlDir):
+                continue
+            latest = join(urlDir, self.LATEST_LINK)
+            if islink(latest):
+                latest = readlink(latest)
+            if isdir(latest) and isdir(join(latest, self.CONTENT_DATABASE)) and isdir(join(latest, self.URL_DATABASE)):
+                ret.append((url, basename(latest)))
+            else:
+                latest = max((join(urlDir, d) for d in listdir(urlDir)), key = getmtime, default = urlDir)
+                if isdir(latest) and isdir(join(latest, self.CONTENT_DATABASE)) and isdir(join(latest, self.URL_DATABASE)):
+                    ret.append((url, basename(latest)))
+        return tuple(sorted(ret))
+
 class MagicMirror(object):
-    def __init__(self, databaseLocation, databaseClass = MagicMirrorFileDatabase, mirrorSuffix = None):
+    def __init__(self, databaseLocation, mirrorSuffix = None, databaseClass = MagicMirrorFileDatabase):
         self.database = databaseClass(databaseLocation)
         self.mirrorSuffix = mirrorSuffix
 
@@ -262,6 +293,7 @@ class MagicMirror(object):
                 else:
                     contentLength = tempFile.tell()
                     assert contentLength
+                    print("%d bytes ::" % contentLength, end = ' ')
                 contentHash = self.dataHash(tempHash)
                 (dataSize, _dataStream) = self.database.loadData(contentHash)
                 if dataSize == contentLength:
@@ -269,6 +301,9 @@ class MagicMirror(object):
                 else:
                     if dataSize:
                         print("DAMAGED, OVERWRITING", end = ' ')
+                        print()
+                        print(contentHash)
+                        raise BaseException('BOOM')
                     else:
                         print("new, saving", end = ' ')
                     tempFile.seek(0)
@@ -278,9 +313,9 @@ class MagicMirror(object):
             urlHash = self.processOriginalURL(url)
             (oldURL, oldContentType, oldContentLength, oldContentHash) = self.database.loadURL(urlHash)
             if oldURL:
-                # ToDo: Do something better with this
-                print("Overwriting URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'MISMATCHES'))
-            self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
+                print("Repeated URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'DIFFERENT'))
+            else:
+                self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
         except Exception as e:
             print("\nERROR: %s" % e)
             print(format_exc())
@@ -387,22 +422,47 @@ class MagicMirrorServer(MagicMirror):
         return (None, None, None, None)
 
 class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
+    INDEX_PAGE = '''
+<html>
+<head>
+<title>Magic Mirror</title>
+</head>
+<body>
+<h1>Magic Mirror</h1>
+<p>
+Available mirrored sites are:
+</p>
+<p>
+%s
+</p>
+</body>
+</html>
+'''
     magicMirrorServer = None
 
     @classmethod
-    def configure(cls, databaseLocation, mirrorSuffix):
+    def configure(cls, databaseLocation, mirrorSuffix, port = None):
         cls.magicMirrorServer = MagicMirrorServer(databaseLocation, mirrorSuffix)
+        cls.port = port
 
     def send404(self):
         self.send_response(404)
         self.end_headers()
-        self.wfile.write('404')
+        self.wfile.write(b'404')
 
     def do_GET(self):
-        (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(self.headers['host'], self.path) # ToDo: Log the headers data
-        if not url:
-            self.send404()
-        with contentStream:
+        host = self.headers['host']
+        print(host)
+        if host.split(':')[0] == self.magicMirrorServer.mirrorSuffix or not host.split(':')[0].endswith(self.magicMirrorServer.mirrorSuffix):
+            content = self.INDEX_PAGE % '<br>'.join(('<a href="http://%s.%s%s">%s</a> (%s)' % (url, self.magicMirrorServer.mirrorSuffix, ':%s' % self.port if self.port else '', url, date)) for (url, date) in self.magicMirrorServer.database.listURLs())
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', len(content))
+            self.end_headers()
+            self.wfile.write(content.encode('utf-8'))
+            return
+        (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(host, self.path) # ToDo: Log the headers data
+        if url:
             self.send_response(200)
             self.send_header('Content-Type', contentType)
             self.send_header('Content-Length', contentLength)
@@ -413,11 +473,14 @@ class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(data)
             assert contentStream.tell() == contentLength
+        else:
+            self.send404()
 
 def usage():
-    pass
+    print(USAGE)
 
 def main(args):
+    print(TITLE)
     # ToDo: employ getopt for proper option handling
     if args:
         command = args[0].lower()
@@ -427,7 +490,7 @@ def main(args):
         elif command == 'crawl':
             exit(1 if MagicMirrorCrawler(parameters[0]).run(parameters[1:]) else 0)
         elif command == 'serve':
-            MirrorHTTPRequestHandler.configure(*parameters[:2])
+            MirrorHTTPRequestHandler.configure(*parameters[:3])
             parameters = parameters[2:]
             HTTPServer(('', int(parameters[0]) if parameters else 80), MirrorHTTPRequestHandler).serve_forever()
             exit(1)
