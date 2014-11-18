@@ -227,7 +227,7 @@ class MagicMirror(object):
         www. prefix is removed if it exists.
         """
         (scheme, hostName, port, _path, _query, _fragment) = cls.parseURL(url)
-        return '.'.join(((scheme,) if scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
+        return '.'.join(((scheme,) if scheme and scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
 
     @classmethod
     def processOriginalURL(cls, url):
