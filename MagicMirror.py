@@ -2,7 +2,7 @@
 from datetime import datetime
 from hashlib import md5 as dbHash
 from os import fdopen, listdir, makedirs, readlink, remove, symlink
-from os.path import basename, getmtime, getsize, isdir, isfile, islink, join
+from os.path import basename, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
@@ -21,7 +21,7 @@ except ImportError as ex:
     print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
 
-TITLE = '\nMagicMirror v0.01 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.02 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
@@ -108,14 +108,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
 
     def setLocation(self, hostName, timeStamp = None):
         self.mirrorDir = join(self.location, hostName)
-        if timeStamp:
-            self.targetDir = join(self.mirrorDir, timeStamp)
-        else:
-            latest = join(self.mirrorDir, self.LATEST_LINK)
-            if islink(latest) or isdir(latest):
-                self.targetDir = latest
-            else:
-                self.targetDir = max((join(self.mirrorDir, d) for d in listdir(self.mirrorDir)), key = getmtime, default = self.mirrorDir)
+        self.targetDir = join(self.mirrorDir, timeStamp if timeStamp else self.LATEST_LINK)
         if timeStamp:
             print(self.targetDir)
         self.contentDatabaseDir = join(self.targetDir, self.CONTENT_DATABASE)
@@ -169,12 +162,8 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             latest = join(urlDir, self.LATEST_LINK)
             if islink(latest):
                 latest = readlink(latest)
-            if isdir(latest) and isdir(join(latest, self.CONTENT_DATABASE)) and isdir(join(latest, self.URL_DATABASE)):
+            if isdir(latest):
                 ret.append((url, basename(latest)))
-            else:
-                latest = max((join(urlDir, d) for d in listdir(urlDir)), key = getmtime, default = urlDir)
-                if isdir(latest) and isdir(join(latest, self.CONTENT_DATABASE)) and isdir(join(latest, self.URL_DATABASE)):
-                    ret.append((url, basename(latest)))
         return tuple(sorted(ret))
 
 class MagicMirror(object):
@@ -388,7 +377,7 @@ class MagicMirrorCrawler(MagicMirror):
 
     def crawl(self, sourceURL):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
-        print('\n%s ->' % sourceURL, end = ' ')
+        print('%s ->' % sourceURL, end = ' ')
         self.database.setLocation(self.processHostName(sourceURL), timeStamp)
         urlCache = set()
         try:
