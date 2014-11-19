@@ -21,6 +21,12 @@ except ImportError as ex:
     print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
 
+# ToDo: Filter out robots.txt
+# ToDo: Localize links
+# ToDo: Think about remote pictures
+# ToDo: Fix errno 8 (add buffer?)
+# ToDo: Find out why wget skips certain addresses
+
 TITLE = '\nMagicMirror v0.02 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
@@ -367,8 +373,8 @@ def wgetUrlSource(sourceURL): # generator
     if wget.poll() is None:
         print("Terminating...")
         wget.wait()
-    if wget.returncode:
-        raise Exception("wget error: %d" % wget.returncode)
+    if wget.returncode: # ToDo: What if really bad problem occurs?
+        print("WARNING: wget error %d" % wget.returncode)
 
 class MagicMirrorCrawler(MagicMirror):
     def __init__(self, databaseLocation, urlSource = wgetUrlSource):
