@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from datetime import datetime
 from hashlib import md5 as dbHash
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from os import fdopen, listdir, makedirs, readlink, remove, symlink
 from os.path import basename, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
@@ -8,8 +9,6 @@ from sys import argv, exit, stdout # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
 from traceback import format_exc
 from urllib.parse import urlsplit, urlunsplit
-
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 stdout = fdopen(stdout.fileno(), 'wb', 0)
 
@@ -75,11 +74,10 @@ class MagicMirrorDatabase(object): # abstract
     def markLatest(self):
         raise NotImplementedError
 
-    def saveURL(self, key, url, contentType, contentLength, contentHash):
+    def saveURL(self, key, *args):
         raise NotImplementedError
 
     def loadURL(self, key):
-        # return (url, contentType, contentLength, contentHash)
         raise NotImplementedError
 
     def saveData(self, key, sourceStream):
@@ -173,6 +171,8 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         return tuple(sorted(ret))
 
 class MagicMirror(object):
+    ZERO_HASH = '0'
+
     def __init__(self, databaseLocation, mirrorSuffix = None, databaseClass = MagicMirrorFileDatabase):
         self.database = databaseClass(databaseLocation)
         self.mirrorSuffix = mirrorSuffix
@@ -180,7 +180,9 @@ class MagicMirror(object):
     @staticmethod
     def dataHash(data):
         """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
-        return (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
+        ret = (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
+        assert len(ret) == 2 * dbHash().digest_size # pylint: disable=E1101
+        return ret
 
     @staticmethod
     def parseURL(url):
@@ -282,35 +284,34 @@ class MagicMirror(object):
                 for chunk in request.iter_content(DATA_CHUNK):
                     tempFile.write(chunk)
                     tempHash.update(chunk)
+                size = tempFile.tell()
                 if contentLength:
-                    contentLength = int(contentLength)
-                    assert contentLength == tempFile.tell()
+                    if size != int(contentLength):
+                        print("ACTUALLY %d bytes ::" % size, end = ' ')
                 else:
-                    contentLength = tempFile.tell()
-                    assert contentLength
-                    print("%d bytes ::" % contentLength, end = ' ')
-                contentHash = self.dataHash(tempHash)
-                (dataSize, _dataStream) = self.database.loadData(contentHash)
-                if dataSize == contentLength:
-                    print("exists, match", end = ' ')
-                else:
-                    if dataSize:
-                        print("DAMAGED, OVERWRITING", end = ' ')
-                        print()
-                        print(contentHash)
-                        raise BaseException('BOOM')
+                    print("%d bytes ::" % size, end = ' ')
+                contentLength = size
+                if contentLength:
+                    contentHash = self.dataHash(tempHash)
+                    (dataSize, _dataStream) = self.database.loadData(contentHash)
+                    if dataSize == contentLength:
+                        print("exists, match", end = ' ')
                     else:
-                        print("new, saving", end = ' ')
-                    tempFile.seek(0)
-                    written = self.database.saveData(contentHash, tempFile)
-                    assert written == contentLength
+                        print("DAMAGED, OVERWRITING" if dataSize else "new, saving", end = ' ')
+                        tempFile.seek(0)
+                        written = self.database.saveData(contentHash, tempFile)
+                        assert written == contentLength
+                else:
+                    contentHash = self.ZERO_HASH
             print("OK")
             urlHash = self.processOriginalURL(url)
             (oldURL, oldContentType, oldContentLength, oldContentHash) = self.database.loadURL(urlHash)
             if oldURL:
-                print("Repeated URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'DIFFERENT'))
-            else:
-                self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
+                print("Previous URL %s :: %s :: %s bytes :: content %s" % (oldURL, oldContentType, oldContentLength, 'matches' if contentHash == oldContentHash else 'DIFFERENT'))
+                if oldContentHash != self.ZERO_HASH or contentHash == self.ZERO_HASH:
+                    return
+                print("Previous URL contained empty page, overwriting")
+            self.database.saveURL(urlHash, url, contentType, str(contentLength), contentHash)
         except Exception as e:
             print("\nERROR: %s" % e)
             print(format_exc())
@@ -411,12 +412,19 @@ class MagicMirrorServer(MagicMirror):
             (url, contentType, contentLength, contentHash) = self.database.loadURL(urlHash)
             if url:
                 contentLength = int(contentLength)
-                (contentSize, contentStream) = self.database.loadData(contentHash)
-                assert contentSize == contentLength
-                return (url, contentType, contentLength, contentStream)
+                if contentLength == 0:
+                    assert contentHash == self.ZERO_HASH
+                    return (url, contentType, 0, None)
+                else:
+                    assert len(contentHash) == 2 * dbHash().digest_size # pylint: disable=E1101
+                    (contentSize, contentStream) = self.database.loadData(contentHash)
+                    assert contentSize == contentLength
+                    return (url, contentType, contentLength, contentStream)
         return (None, None, None, None)
 
 class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
+    ENCODING = 'utf-8'
+
     INDEX_PAGE = '''
 <html>
 <head>
@@ -430,6 +438,47 @@ Available mirrored sites are:
 <p>
 %s
 </p>
+<hr>
+</body>
+</html>
+'''
+    NO_URLS = '<em>(sorry, no sites have been mirrored yet)</em>'
+
+    EMPTY_PAGE = '''
+<html>
+<head>
+<title>Magic Mirror</title>
+</head>
+<body>
+<h1>Magic Mirror</h1>
+<p><strong>Sorry, there was an empty page at this address at the original web-site.</strong></p>
+<p>
+Original URL: <a href="{0}"><code>{0}</code></a>
+<br>
+Content-Type: <code>{1}</code>
+</p>
+<p>
+Original web site: <a href="{2}"><code>{2}</code></a>
+<br>Mirrored copy root: <a href="http://{3}"><code>http://{3}</code></a>
+</p>
+<p>Magic Mirror root: <a href="http://{4}{5}"><code>http://{4}{5}</code></a></p>
+<p>Magic Mirror project: <a href="https://code.google.com/p/magic-mirror-crawler"><code>https://code.google.com/p/magic-mirror-crawler</code></p>
+<hr>
+</body>
+</html>
+'''
+
+    NOT_FOUND_PAGE = '''
+<html>
+<head>
+<title>404: Not Found :: Magic Mirror</title>
+</head>
+<body>
+<h1>Magic Mirror</h1>
+<p><strong>404: Not found. Sorry, this page is not present in the mirror.</strong></p>
+<p>Magic Mirror root: <a href="http://{0}{1}"><code>http://{0}{1}</code></a></p>
+<p>Magic Mirror project: <a href="https://code.google.com/p/magic-mirror-crawler"><code>https://code.google.com/p/magic-mirror-crawler</code></p>
+<hr>
 </body>
 </html>
 '''
@@ -438,38 +487,47 @@ Available mirrored sites are:
     @classmethod
     def configure(cls, databaseLocation, mirrorSuffix, port = None):
         cls.magicMirrorServer = MagicMirrorServer(databaseLocation, mirrorSuffix)
-        cls.port = port
-
-    def send404(self):
-        self.send_response(404)
-        self.end_headers()
-        self.wfile.write(b'404')
+        cls.port = int(port) if port else None
 
     def do_GET(self):
         host = self.headers['host']
         print(host)
         if host.split(':')[0] == self.magicMirrorServer.mirrorSuffix or not host.split(':')[0].endswith(self.magicMirrorServer.mirrorSuffix):
-            content = self.INDEX_PAGE % '<br>'.join(('<a href="http://%s.%s%s">%s</a> (%s)' % (url, self.magicMirrorServer.mirrorSuffix, ':%s' % self.port if self.port else '', url, date)) for (url, date) in self.magicMirrorServer.database.listURLs())
+            mirroredURLs = self.magicMirrorServer.database.listURLs()
+            if mirroredURLs:
+                htmlURLs = '<br>'.join(('<a href="http://%s.%s%s">%s</a> (%s)' % (url, self.magicMirrorServer.mirrorSuffix, ':%s' % self.port if self.port else '', url, date)) for (url, date) in mirroredURLs)
+            else:
+                htmlURLs = self.NO_URLS
+            content = self.INDEX_PAGE % htmlURLs
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.send_header('Content-Length', len(content))
             self.end_headers()
-            self.wfile.write(content.encode('utf-8'))
+            self.wfile.write(content.encode(self.ENCODING))
             return
         (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(host, self.path) # ToDo: Log the headers data
         if url:
             self.send_response(200)
-            self.send_header('Content-Type', contentType)
-            self.send_header('Content-Length', contentLength)
-            self.end_headers()
-            while True:
-                data = contentStream.read(DATA_CHUNK)
-                if not data:
-                    break
-                self.wfile.write(data)
-            assert contentStream.tell() == contentLength
+            if contentLength:
+                self.send_header('Content-Type', contentType)
+                self.send_header('Content-Length', contentLength)
+                self.end_headers()
+                while True:
+                    data = contentStream.read(DATA_CHUNK)
+                    if not data:
+                        break
+                    self.wfile.write(data)
+                assert contentStream.tell() == contentLength
+                return
+            else: # empty page
+                content = self.EMPTY_PAGE.format(url, contentType, '://'.join(urlsplit(url)[:2]), host, self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
         else:
-            self.send404()
+            self.send_response(404)
+            content = self.NOT_FOUND_PAGE.format(self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
+        self.send_header('Content-Type', 'text/html; charset=%s' % self.ENCODING)
+        self.send_header('Content-Length', len(content))
+        self.end_headers()
+        self.wfile.write(content.encode(self.ENCODING))
 
 def usage():
     print(USAGE)
