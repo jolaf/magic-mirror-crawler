@@ -378,6 +378,8 @@ def wgetUrlSource(sourceURL): # generator
         print("WARNING: wget error %d" % wget.returncode)
 
 class MagicMirrorCrawler(MagicMirror):
+    ROBOTS_TXT = 'robots.txt'
+
     def __init__(self, databaseLocation, urlSource = wgetUrlSource):
         MagicMirror.__init__(self, databaseLocation)
         self.urlSource = urlSource # generator
@@ -389,7 +391,7 @@ class MagicMirrorCrawler(MagicMirror):
         urlCache = set()
         try:
             for url in self.urlSource(sourceURL):
-                if url not in urlCache:
+                if url not in urlCache and not url.endswith(self.ROBOTS_TXT):
                     self.downloadURL(url)
                     urlCache.add(url)
             self.database.markLatest()
