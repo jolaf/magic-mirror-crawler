@@ -2,15 +2,13 @@
 from datetime import datetime
 from hashlib import md5 as dbHash
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from os import fdopen, listdir, makedirs, readlink, remove, symlink
+from os import listdir, makedirs, readlink, remove, symlink
 from os.path import basename, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
-from sys import argv, exit, stdout # pylint: disable=W0622
+from sys import argv, exit # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
 from traceback import format_exc
 from urllib.parse import urlsplit, urlunsplit
-
-stdout = fdopen(stdout.fileno(), 'wb', 0)
 
 try: # Requests HTTP library
     import requests
@@ -20,13 +18,15 @@ except ImportError as ex:
     print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
 
-# ToDo: Filter out robots.txt
 # ToDo: Localize links
-# ToDo: Think about remote pictures
-# ToDo: Fix errno 8 (add buffer?)
+# ToDo: Think about remote pictures and pages (redirects)
 # ToDo: Find out why wget skips certain addresses
+# ToDo: Use Tornado as web engine
+# ToDo: Employ getopt for proper option handling
+# ToDo: Employ proper logging
+# ToDo: Use config file for logging, DB and suffix settings
 
-TITLE = '\nMagicMirror v0.02 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.03 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
@@ -224,6 +224,8 @@ class MagicMirror(object):
         www. prefix is removed if it exists.
         """
         (scheme, hostName, port, _path, _query, _fragment) = cls.parseURL(url)
+        if not scheme:
+            (scheme, hostName, port, _path, _query, _fragment) = cls.parseURL(HTTP + '://' + url)
         return '.'.join(((scheme,) if scheme and scheme != HTTP else ()) + (hostName,) + ((str(port),) if port else ()))
 
     @classmethod
@@ -274,11 +276,11 @@ class MagicMirror(object):
 
     def downloadURL(self, url):
         try:
-            print(url, end = ' ')
+            print(url, end = ' ', flush = True)
             request = requests.get(url, stream = True)
             contentType = request.headers['content-type']
             contentLength = request.headers.get('content-length', '')
-            print(':: %s :: %s ::' % (contentType, ('%s bytes' % contentLength) if contentLength else 'no content-length'), end = ' ')
+            print(':: %s :: %s ::' % (contentType, ('%s bytes' % contentLength) if contentLength else 'no content-length'), end = ' ', flush = True)
             tempHash = dbHash()
             with SpooledTemporaryFile(DATA_CHUNK) as tempFile:
                 for chunk in request.iter_content(DATA_CHUNK):
@@ -287,17 +289,17 @@ class MagicMirror(object):
                 size = tempFile.tell()
                 if contentLength:
                     if size != int(contentLength):
-                        print("ACTUALLY %d bytes ::" % size, end = ' ')
+                        print("ACTUALLY %d bytes ::" % size, end = ' ', flush = True)
                 else:
-                    print("%d bytes ::" % size, end = ' ')
+                    print("%d bytes ::" % size, end = ' ', flush = True)
                 contentLength = size
                 if contentLength:
                     contentHash = self.dataHash(tempHash)
                     (dataSize, _dataStream) = self.database.loadData(contentHash)
                     if dataSize == contentLength:
-                        print("exists, match", end = ' ')
+                        print("exists, match", end = ' ', flush = True)
                     else:
-                        print("DAMAGED, OVERWRITING" if dataSize else "new, saving", end = ' ')
+                        print("DAMAGED, OVERWRITING" if dataSize else "new, saving", end = ' ', flush = True)
                         tempFile.seek(0)
                         written = self.database.saveData(contentHash, tempFile)
                         assert written == contentLength
@@ -368,7 +370,7 @@ def wgetUrlSource(sourceURL): # generator
     wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT)
     for urlBytes in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
         try:
-            yield urlBytes.decode('utf-8')#, error = 'replace') # ToDo
+            yield urlBytes.decode('utf-8')
         except Exception as e:
             print("ERROR decoding URL %r: %s" % (urlBytes, e))
     if wget.poll() is None:
@@ -386,7 +388,7 @@ class MagicMirrorCrawler(MagicMirror):
 
     def crawl(self, sourceURL):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
-        print('%s ->' % sourceURL, end = ' ')
+        print('%s ->' % sourceURL, end = ' ', flush = True)
         self.database.setLocation(self.processHostName(sourceURL), timeStamp)
         urlCache = set()
         try:
@@ -536,7 +538,6 @@ def usage():
 
 def main(args):
     print(TITLE)
-    # ToDo: employ getopt for proper option handling
     if args:
         command = args[0].lower()
         parameters = args[1:]
