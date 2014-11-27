@@ -130,7 +130,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
             linkName = join(self.mirrorDir, self.LATEST_LINK)
             if islink(linkName):
                 remove(linkName)
-            symlink('./%s' % self.timeStamp, linkName)
+            symlink(join('.', self.timeStamp), linkName)
             print("DONE, set as latest")
         except NotImplementedError:
             print("DONE, linking unsupported")
