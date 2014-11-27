@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from datetime import datetime
+from gzip import GzipFile
 from hashlib import md5 as dbHash
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from io import BytesIO
 from os import listdir, makedirs, readlink, remove, symlink
 from os.path import basename, getsize, isdir, isfile, islink, join
 from subprocess import Popen, PIPE, STDOUT
@@ -12,8 +14,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 try: # Requests HTTP library
     import requests
-    if requests.__version__.split('.') < ['2', '3', '0']:
-        raise ImportError('Requests version %s < 2.3.0' % requests.__version__)
+    if requests.__version__.split('.') < ['2', '2', '1']:
+        raise ImportError('Requests version %s < 2.2.1' % requests.__version__)
 except ImportError as ex:
     print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
     exit(-1)
@@ -22,6 +24,7 @@ except ImportError as ex:
 # ToDo: Think about remote pictures and pages (redirects)
 # ToDo: Find out why wget skips certain addresses
 # ToDo: Use Tornado as web engine
+# ToDo: Use Tornado as asynchronous retriever
 # ToDo: Employ getopt for proper option handling
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
@@ -173,6 +176,10 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
 class MagicMirror(object):
     ZERO_HASH = '0'
 
+    GZIP_SUFFIX = '.gz'
+    MIN_SIZE_FOR_GZIP = 513
+    MIN_GZIP_EFFECTIVENESS = 90
+
     def __init__(self, databaseLocation, mirrorSuffix = None, databaseClass = MagicMirrorFileDatabase):
         self.database = databaseClass(databaseLocation)
         self.mirrorSuffix = mirrorSuffix
@@ -296,13 +303,31 @@ class MagicMirror(object):
                 if contentLength:
                     contentHash = self.dataHash(tempHash)
                     (dataSize, _dataStream) = self.database.loadData(contentHash)
-                    if dataSize == contentLength:
+                    if contentLength == dataSize:
                         print("exists, match", end = ' ', flush = True)
                     else:
                         print("DAMAGED, OVERWRITING" if dataSize else "new, saving", end = ' ', flush = True)
-                        tempFile.seek(0)
-                        written = self.database.saveData(contentHash, tempFile)
-                        assert written == contentLength
+                        gzipped = False
+                        if contentLength >= self.MIN_SIZE_FOR_GZIP:
+                            tempFile.seek(0)
+                            with SpooledTemporaryFile(DATA_CHUNK) as gzipFile:
+                                with GzipFile(contentHash, 'wb', fileobj = gzipFile) as gzip:
+                                    while True:
+                                        data = tempFile.read(DATA_CHUNK)
+                                        if not data:
+                                            break
+                                        gzip.write(data)
+                                zipLength = gzipFile.tell()
+                                if zipLength * 100 < contentLength * self.MIN_GZIP_EFFECTIVENESS:
+                                    contentHash += self.GZIP_SUFFIX
+                                    gzipFile.seek(0)
+                                    written = self.database.saveData(contentHash, gzipFile)
+                                    assert written == zipLength
+                                    gzipped = True
+                        if not gzipped:
+                            tempFile.seek(0)
+                            written = self.database.saveData(contentHash, tempFile)
+                            assert written == contentLength
                 else:
                     contentHash = self.ZERO_HASH
             print("OK")
@@ -406,8 +431,12 @@ class MagicMirrorCrawler(MagicMirror):
             self.crawl(sourceURL)
 
 class MagicMirrorServer(MagicMirror):
+    TYPES_TO_PROCESS = set()#'text/html', 'text/css', 'text/javascript')
     def __init__(self, databaseLocation, mirrorSuffix):
         MagicMirror.__init__(self, databaseLocation, mirrorSuffix)
+
+    def processContent(self, hostName, content):
+        return content # ToDo
 
     def serve(self, host, path):
         (hostName, urlHash) = self.processMirrorURL(host, path)
@@ -420,9 +449,16 @@ class MagicMirrorServer(MagicMirror):
                     assert contentHash == self.ZERO_HASH
                     return (url, contentType, 0, None)
                 else:
-                    assert len(contentHash) == 2 * dbHash().digest_size # pylint: disable=E1101
+                    gzipped = contentHash.endswith(self.GZIP_SUFFIX)
+                    assert len(contentHash) == 2 * dbHash().digest_size + len(self.GZIP_SUFFIX) * gzipped # pylint: disable=E1101
                     (contentSize, contentStream) = self.database.loadData(contentHash)
-                    assert contentSize == contentLength
+                    if gzipped:
+                        assert contentSize < contentLength
+                        contentStream = GzipFile(fileobj = contentStream)
+                    else:
+                        assert contentSize == contentLength
+                    if contentLength < DATA_CHUNK and contentType.lower() in self.TYPES_TO_PROCESS:
+                        contentStream = BytesIO(self.processContent(hostName, contentStream.read()))
                     return (url, contentType, contentLength, contentStream)
         return (None, None, None, None)
 
@@ -496,7 +532,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
     def do_GET(self):
         host = self.headers['host']
         print(host)
-        if host.split(':')[0] == self.magicMirrorServer.mirrorSuffix or not host.split(':')[0].endswith(self.magicMirrorServer.mirrorSuffix):
+        if host.split(':')[0] == self.magicMirrorServer.mirrorSuffix or not host.split(':')[0].endswith(self.magicMirrorServer.mirrorSuffix): # root page
             mirroredURLs = self.magicMirrorServer.database.listURLs()
             if mirroredURLs:
                 htmlURLs = '<br>'.join(('<a href="http://%s.%s%s">%s</a> (%s)' % (url, self.magicMirrorServer.mirrorSuffix, ':%s' % self.port if self.port else '', url, date)) for (url, date) in mirroredURLs)
@@ -510,7 +546,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
             self.wfile.write(content.encode(self.ENCODING))
             return
         (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(host, self.path) # ToDo: Log the headers data
-        if url:
+        if url: # page found
             self.send_response(200)
             if contentLength:
                 self.send_header('Content-Type', contentType)
@@ -525,7 +561,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
                 return
             else: # empty page
                 content = self.EMPTY_PAGE.format(url, contentType, '://'.join(urlsplit(url)[:2]), host, self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
-        else:
+        else: # page not found
             self.send_response(404)
             content = self.NOT_FOUND_PAGE.format(self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
         self.send_header('Content-Type', 'text/html; charset=%s' % self.ENCODING)
