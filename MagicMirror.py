@@ -561,7 +561,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
                     if not data:
                         break
                     self.wfile.write(data)
-                assert contentStream.tell() == contentLength
+                assert contentStream.tell() == contentLength # pylint: disable=E1103
                 return
             else: # empty page
                 content = self.EMPTY_PAGE.format(url, contentType, '://'.join(urlsplit(url)[:2]), host, self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
