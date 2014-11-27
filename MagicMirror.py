@@ -5,7 +5,8 @@ from hashlib import md5 as dbHash
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 from os import listdir, makedirs, readlink, remove, symlink
-from os.path import basename, getsize, isdir, isfile, islink, join
+from os.path import abspath, basename, getsize, isdir, isfile, islink, join
+from re import compile as reCompile
 from subprocess import Popen, PIPE, STDOUT
 from sys import argv, exit # pylint: disable=W0622
 from tempfile import SpooledTemporaryFile
@@ -101,6 +102,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
 
     def __init__(self, location):
         MagicMirrorDatabase.__init__(self, location)
+        self.location = abspath(self.location)
         self.mirrorDir = None
         self.targetDir = None
         self.contentDatabaseDir = None
@@ -115,6 +117,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
 
     def setLocation(self, hostName, timeStamp = None):
         self.mirrorDir = join(self.location, hostName)
+        self.timeStamp = timeStamp
         self.targetDir = join(self.mirrorDir, timeStamp if timeStamp else self.LATEST_LINK)
         if timeStamp:
             print(self.targetDir)
@@ -122,11 +125,12 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
         self.urlDatabaseDir = join(self.targetDir, self.URL_DATABASE)
 
     def markLatest(self):
+        assert self.timeStamp
         try:
             linkName = join(self.mirrorDir, self.LATEST_LINK)
             if islink(linkName):
                 remove(linkName)
-            symlink(self.targetDir, linkName)
+            symlink('./%s' % self.timeStamp, linkName)
             print("DONE, set as latest")
         except NotImplementedError:
             print("DONE, linking unsupported")
@@ -389,7 +393,7 @@ class MagicMirror(object):
         print("OK")
         return 0
 
-WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--spider', '--delete-after')
+WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--delete-after')
 WGET_URL_PREFIX = b'--'
 def wgetUrlSource(sourceURL): # generator
     wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT)
@@ -431,7 +435,7 @@ class MagicMirrorCrawler(MagicMirror):
             self.crawl(sourceURL)
 
 class MagicMirrorServer(MagicMirror):
-    TYPES_TO_PROCESS = set()#'text/html', 'text/css', 'text/javascript')
+    TYPES_TO_PROCESS = set(('text/html', 'text/css', 'text/javascript'))
     def __init__(self, databaseLocation, mirrorSuffix):
         MagicMirror.__init__(self, databaseLocation, mirrorSuffix)
 
