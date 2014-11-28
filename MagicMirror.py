@@ -4,6 +4,7 @@ from gzip import GzipFile
 from hashlib import md5 as dbHash
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
+from itertools import chain
 from os import listdir, makedirs, readlink, remove, symlink
 from os.path import abspath, basename, getsize, isdir, isfile, islink, join
 from re import compile as reCompile
@@ -57,7 +58,7 @@ $ wget http://https.other.site.com.444.my.archive.com:8080
 
 DATA_CHUNK = 10 * 1024 * 1024 # 10 megabytes
 
-TIMESTAMP_FORMAT = '%Y-%m-%d'
+TIMESTAMP_FORMAT = '%Y-%m-%d_%H-%M-%S'
 
 HTTP = 'http'
 HTTPS = 'https'
@@ -415,13 +416,13 @@ class MagicMirrorCrawler(MagicMirror):
         MagicMirror.__init__(self, databaseLocation)
         self.urlSource = urlSource # generator
 
-    def crawl(self, sourceURL):
+    def crawl(self, sourceURLs):
         timeStamp = datetime.now().strftime(TIMESTAMP_FORMAT)
-        print('%s ->' % sourceURL, end = ' ', flush = True)
-        self.database.setLocation(self.processHostName(sourceURL), timeStamp)
+        print('%s ->' % sourceURLs[0], end = ' ', flush = True)
+        self.database.setLocation(self.processHostName(sourceURLs[0]), timeStamp)
         urlCache = set()
         try:
-            for url in self.urlSource(sourceURL):
+            for url in chain(self.urlSource(sourceURLs[0]), sourceURLs[1:]):
                 if url not in urlCache and not url.endswith(self.ROBOTS_TXT):
                     self.downloadURL(url)
                     urlCache.add(url)
@@ -429,10 +430,6 @@ class MagicMirrorCrawler(MagicMirror):
         except Exception as e:
             print("ERROR:", e)
             print(format_exc())
-
-    def run(self, sourceURLs):
-        for sourceURL in sourceURLs:
-            self.crawl(sourceURL)
 
 class MagicMirrorServer(MagicMirror):
     TYPES_TO_PROCESS = set(('text/html', 'text/css', 'text/javascript'))
@@ -584,7 +581,7 @@ def main(args):
         if command == 'test':
             exit(MagicMirror.test())
         elif command == 'crawl':
-            exit(1 if MagicMirrorCrawler(parameters[0]).run(parameters[1:]) else 0)
+            exit(1 if MagicMirrorCrawler(parameters[0]).crawl(parameters[1:]) else 0)
         elif command == 'serve':
             MirrorHTTPRequestHandler.configure(*parameters[:3])
             parameters = parameters[2:]
