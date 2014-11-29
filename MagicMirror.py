@@ -31,7 +31,7 @@ except ImportError as ex:
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
 
-TITLE = '\nMagicMirror v0.041 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.05 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
@@ -394,20 +394,22 @@ class MagicMirror(object):
         print("OK")
         return 0
 
-WGET_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--delete-after')
+WGET_CRAWL_ARGS = ('wget', '-r', '-l', 'inf', '-nd', '--delete-after')
+WGET_SINGLE_ARGS = ('wget', '-p', '-nd', '--delete-after')
 WGET_URL_PREFIX = b'--'
-def wgetUrlSource(sourceURL): # generator
-    wget = Popen(WGET_ARGS + (sourceURL,), stdout = PIPE, stderr = STDOUT)
+
+def wgetUrlSource(sourceURL, recursive = False): # generator
+    wget = Popen((WGET_CRAWL_ARGS if recursive else WGET_SINGLE_ARGS) + (sourceURL,), stdout = PIPE, stderr = STDOUT)
     for urlBytes in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
         try:
             yield urlBytes.decode('utf-8')
         except Exception as e:
             print("ERROR decoding URL %r: %s" % (urlBytes, e))
     if wget.poll() is None:
-        print("Terminating...")
+        #print("Terminating...")
         wget.wait()
     if wget.returncode: # ToDo: What if really bad problem occurs?
-        print("WARNING: wget error %d" % wget.returncode)
+        print("WARNING: wget return code %d" % wget.returncode)
 
 class MagicMirrorCrawler(MagicMirror):
     ROBOTS_TXT = 'robots.txt'
@@ -422,7 +424,7 @@ class MagicMirrorCrawler(MagicMirror):
         self.database.setLocation(self.processHostName(sourceURLs[0]), timeStamp)
         urlCache = set()
         try:
-            for url in chain(self.urlSource(sourceURLs[0]), sourceURLs[1:]):
+            for url in chain.from_iterable(self.urlSource(url, n == 0) for (n, url) in enumerate(sourceURLs)):
                 if url not in urlCache and not url.endswith(self.ROBOTS_TXT):
                     self.downloadURL(url)
                     urlCache.add(url)
