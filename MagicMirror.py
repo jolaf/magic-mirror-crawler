@@ -31,7 +31,7 @@ except ImportError as ex:
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
 
-TITLE = '\nMagicMirror v0.03 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.04 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
