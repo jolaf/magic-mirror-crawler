@@ -24,14 +24,14 @@ except ImportError as ex:
 
 # ToDo: Localize links
 # ToDo: Think about remote pictures and pages (redirects)
-# ToDo: Find out why wget skips certain addresses
+# ToDo: Use human readable timestamp format
 # ToDo: Use Tornado as web engine
 # ToDo: Use Tornado as asynchronous retriever
 # ToDo: Employ getopt for proper option handling
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
 
-TITLE = '\nMagicMirror v0.04 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.041 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
@@ -173,7 +173,7 @@ class MagicMirrorFileDatabase(MagicMirrorDatabase):
                 continue
             latest = join(urlDir, self.LATEST_LINK)
             if islink(latest):
-                latest = readlink(latest)
+                latest = join(urlDir, readlink(latest))
             if isdir(latest):
                 ret.append((url, basename(latest)))
         return tuple(sorted(ret))
@@ -532,7 +532,6 @@ Original web site: <a href="{2}"><code>{2}</code></a>
 
     def do_GET(self):
         host = self.headers['host']
-        print(host)
         if host.split(':')[0] == self.magicMirrorServer.mirrorSuffix or not host.split(':')[0].endswith(self.magicMirrorServer.mirrorSuffix): # root page
             mirroredURLs = self.magicMirrorServer.database.listURLs()
             if mirroredURLs:
