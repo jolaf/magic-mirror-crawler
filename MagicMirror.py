@@ -31,7 +31,7 @@ except ImportError as ex:
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
 
-TITLE = '\nMagicMirror v0.05 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
+TITLE = '\nMagicMirror v0.06 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
 USAGE = '''Usage:
 python3 MagicMirror.py crawl databaseDir startURL startURL ...
@@ -349,9 +349,9 @@ class MagicMirror(object):
             print(format_exc())
             raise
 
-    @staticmethod
-    def test():
-        magicMirror = MagicMirror('', mirrorSuffix = 'my.archive.com')
+    @classmethod
+    def test(cls):
+        magicMirror = cls('', mirrorSuffix = 'my.archive.com')
         # dataHash
         assert magicMirror.dataHash('abcd') == 'e2fc714c4727ee9395f324cd2e7f331f'
         # processHostName
@@ -438,6 +438,10 @@ class MagicMirrorServer(MagicMirror):
     def __init__(self, databaseLocation, mirrorSuffix):
         MagicMirror.__init__(self, databaseLocation, mirrorSuffix)
 
+    @classmethod
+    def findURLs(cls, content):
+        return (m.groupdict()['url'] for m in chain.from_iterable(p.finditer(content) for p in cls.PROCESS_PATTERNS))
+
     def processContent(self, hostName, content):
         return content # ToDo
 
@@ -464,6 +468,11 @@ class MagicMirrorServer(MagicMirror):
                         contentStream = BytesIO(self.processContent(hostName, contentStream.read()))
                     return (url, contentType, contentLength, contentStream)
         return (None, None, None, None)
+
+    @classmethod
+    def test(cls):
+        print(tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')))
+        assert tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')) == (b'/',)
 
 class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
     ENCODING = 'utf-8'
@@ -580,7 +589,9 @@ def main(args):
         command = args[0].lower()
         parameters = args[1:]
         if command == 'test':
-            exit(MagicMirror.test())
+            t1 = MagicMirror.test()
+            t2 = MagicMirrorServer.test()
+            exit(t1 or t2)
         elif command == 'crawl':
             exit(1 if MagicMirrorCrawler(parameters[0]).crawl(parameters[1:]) else 0)
         elif command == 'serve':
