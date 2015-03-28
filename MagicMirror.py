@@ -19,7 +19,15 @@ try: # Requests HTTP library
     if requests.__version__.split('.') < ['2', '2', '1']:
         raise ImportError('Requests version %s < 2.2.1' % requests.__version__)
 except ImportError as ex:
-    print("%s: %s\nERROR: This software requires Requests.\nPlease install Requests v2.3.0 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
+    print("%s: %s\nERROR: This software requires requests library.\nPlease install Requests v2.2.1 or later: https://pypi.python.org/pypi/requests" % (ex.__class__.__name__, ex))
+    exit(-1)
+
+try: # cssutils library
+    import cssutils
+    if cssutils.__version__.split('.') < ['1', '0']:
+        raise ImportError('cssutils version %s < 1.0' % requests.__version__)
+except ImportError as ex:
+    print("%s: %s\nERROR: This software requires cssutils library.\nPlease install cssutils v1.0 or later: https://pypi.python.org/pypi/cssutils" % (ex.__class__.__name__, ex))
     exit(-1)
 
 # ToDo: Localize links
@@ -30,6 +38,7 @@ except ImportError as ex:
 # ToDo: Employ getopt for proper option handling
 # ToDo: Employ proper logging
 # ToDo: Use config file for logging, DB and suffix settings
+# ToDo: Raise an error on attempt to mirror the mirror itself
 
 TITLE = '\nMagicMirror v0.06 (c) 2014 Vasily Zakharov vmzakhar@gmail.com\n'
 
@@ -67,6 +76,8 @@ FTP = 'ftp'
 STANDARD_PORTS = { HTTP: 80, HTTPS: 443, FTP: 21 }
 
 WWW_PREFIX = 'www.'
+
+UTF8 = 'utf-8'
 
 class MagicMirrorDatabase(object): # abstract
     """Database access interface."""
@@ -185,6 +196,26 @@ class MagicMirror(object):
     MIN_SIZE_FOR_GZIP = 513
     MIN_GZIP_EFFECTIVENESS = 90
 
+    EXTERNAL = '__external'
+
+    TYPES_TO_PROCESS = set(('text/html', 'text/css', 'text/javascript'))
+
+    # URL_PATTERNS = (rb'(?i)\shref\s*=\s*"\s*(?P<url>(?:\\"|.)*?)\s*"',
+    #                 rb"(?i)\shref\s*=\s*'\s*(?P<url>(?:\\'|.)*?)\s*'",
+    #                 rb"(?i)\shref\s*=\s*(?P<url>[^ '\"].*?)(?:\s|>)",
+    #                 rb'(?i)\ssrc\s*=\s*"\s*(?P<url>(?:\\"|.)*?)\s*"',
+    #                 rb"(?i)\ssrc\s*=\s*'\s*(?P<url>(?:\\'|.)*?)\s*'",
+    #                 rb"(?i)\ssrc\s*=\s*(?P<url>[^ '\"].*?)(?:\s|>)",
+    # )
+
+    HOST_PATTERN = reCompile(br'(?i)(?:https?|ftp)://[\w-]+?\.[\w.-]+?(:\d+|(?![\w.-]))')
+
+#    URL_PATTERNS = tuple(reCompile(p.replace(b'%s', br'(?P<url>.*?)')) for p in PATTERNS)
+ #   HOST_PATTERNS = tuple(reCompile(p.replace(b'%s', br'(?:https?|ftp)://(?P<host>.*?)/?')) for p in PATTERNS)
+        #br'''(?ix)
+        #(?:\shref\s*=|\ssrc\s*=|[\s:]url\s*[(])\s*(?P<quote>['"]?)\s*(?P<url>)\s*(?P=quote)                     ([\'"]?)http://(valahia.jnm.ru)''')
+# CSS: @import url(http://d3g0gp89917ko0.cloudfront.net/v--c67e663218b6/common--modules/css/wiki/pagestagcloud/PagesTagCloudModule.css);
+
     def __init__(self, databaseLocation, mirrorSuffix = None, databaseClass = MagicMirrorFileDatabase):
         self.database = databaseClass(databaseLocation)
         self.mirrorSuffix = mirrorSuffix
@@ -192,7 +223,7 @@ class MagicMirror(object):
     @staticmethod
     def dataHash(data):
         """Returns a hexlified hash digest for the specified block of data or already existing hash object."""
-        ret = (data if hasattr(data, 'digest') else dbHash(data.encode('utf-8'))).hexdigest()
+        ret = (data if hasattr(data, 'digest') else dbHash(data.encode(UTF8))).hexdigest()
         assert len(ret) == 2 * dbHash().digest_size # pylint: disable=E1101
         return ret
 
@@ -274,7 +305,6 @@ class MagicMirror(object):
         For example, URL https://username:password@https.Some.Host.com.8443.my.archive.com:8080/some/path?#
         is normalized to http://https.some.host.com:8443/some/path
         """
-        assert self.mirrorSuffix
         (_scheme, hostName, _port, path, query, fragment) = self.parseURL(HTTP + '://' + host + path)
         if not hostName.endswith(self.mirrorSuffix.lower()):
             return (None, None)
@@ -349,6 +379,19 @@ class MagicMirror(object):
             print(format_exc())
             raise
 
+    # @classmethod
+    # def findURLs(cls, content):
+    #     return (m.groupdict()['url'] for m in chain.from_iterable(p.finditer(content) for p in cls.URL_PATTERNS))
+
+    def processContent(self, hostName, content):
+        m = hostName + '.' + self.mirrorSuffix
+        def l(h):
+            ret = m if h == hostName else ('%s/%s/' % (h.group(0), self.EXTERNAL))
+            print('%s -> %s' % (h.group(0), ret))
+            return ret
+        print(tuple(sorted(set(m.group(0) for m in self.HOST_PATTERN.finditer(content)))))
+        return self.HOST_PATTERN.sub(l, content)
+
     @classmethod
     def test(cls):
         magicMirror = cls('', mirrorSuffix = 'my.archive.com')
@@ -391,6 +434,9 @@ class MagicMirror(object):
         assert magicMirror.processMirrorURL('www.Some.Host.com.443.my.archive.com:8080', '/some/path?#') == ('some.host.com.443', magicMirror.dataHash('http://some.host.com:443/some/path'))
         assert magicMirror.processMirrorURL('www.FTP.Some.Host.com.My.Archive.com:443', '/some/path?abc=def&klm=nop#') == ('ftp.some.host.com', magicMirror.dataHash('http://ftp.some.host.com/some/path?abc=def&klm=nop'))
         assert magicMirror.processMirrorURL('www.Some.Host.com.my.archive.com:443', '/some/path?abc=def&klm=nop#fig25') == ('some.host.com', magicMirror.dataHash('http://some.host.com/some/path?abc=def&klm=nop#fig25'))
+        # findURLs
+        # print(tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')))
+        # assert tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')) == (b'/',)
         print("OK")
         return 0
 
@@ -402,7 +448,7 @@ def wgetUrlSource(sourceURL, recursive = False): # generator
     wget = Popen((WGET_CRAWL_ARGS if recursive else WGET_SINGLE_ARGS) + (sourceURL,), stdout = PIPE, stderr = STDOUT)
     for urlBytes in (line.split()[-1] for line in (line.strip() for line in wget.stdout) if line.startswith(WGET_URL_PREFIX)):
         try:
-            yield urlBytes.decode('utf-8')
+            yield urlBytes.decode(UTF8)
         except Exception as e:
             print("ERROR decoding URL %r: %s" % (urlBytes, e))
     if wget.poll() is None:
@@ -434,16 +480,8 @@ class MagicMirrorCrawler(MagicMirror):
             print(format_exc())
 
 class MagicMirrorServer(MagicMirror):
-    TYPES_TO_PROCESS = set(('text/html', 'text/css', 'text/javascript'))
     def __init__(self, databaseLocation, mirrorSuffix):
         MagicMirror.__init__(self, databaseLocation, mirrorSuffix)
-
-    @classmethod
-    def findURLs(cls, content):
-        return (m.groupdict()['url'] for m in chain.from_iterable(p.finditer(content) for p in cls.PROCESS_PATTERNS))
-
-    def processContent(self, hostName, content):
-        return content # ToDo
 
     def serve(self, host, path):
         (hostName, urlHash) = self.processMirrorURL(host, path)
@@ -464,19 +502,12 @@ class MagicMirrorServer(MagicMirror):
                         contentStream = GzipFile(fileobj = contentStream)
                     else:
                         assert contentSize == contentLength
-                    if contentLength < DATA_CHUNK and contentType.lower() in self.TYPES_TO_PROCESS:
+                    if contentLength < DATA_CHUNK and contentType.lower().split(';')[0] in self.TYPES_TO_PROCESS:
                         contentStream = BytesIO(self.processContent(hostName, contentStream.read()))
                     return (url, contentType, contentLength, contentStream)
         return (None, None, None, None)
 
-    @classmethod
-    def test(cls):
-        print(tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')))
-        assert tuple(cls.findURLs(b'<a  href  =  "  /   "  alt="">')) == (b'/',)
-
 class MirrorHTTPRequestHandler(BaseHTTPRequestHandler):
-    ENCODING = 'utf-8'
-
     INDEX_PAGE = '''
 <html>
 <head>
@@ -554,7 +585,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
             self.send_header('Content-Type', 'text/html')
             self.send_header('Content-Length', len(content))
             self.end_headers()
-            self.wfile.write(content.encode(self.ENCODING))
+            self.wfile.write(content.encode(UTF8))
             return
         (url, contentType, contentLength, contentStream) = self.magicMirrorServer.serve(host, self.path) # ToDo: Log the headers data
         if url: # page found
@@ -575,10 +606,10 @@ Original web site: <a href="{2}"><code>{2}</code></a>
         else: # page not found
             self.send_response(404)
             content = self.NOT_FOUND_PAGE.format(self.magicMirrorServer.mirrorSuffix, ':%d' % self.port if self.port else '')
-        self.send_header('Content-Type', 'text/html; charset=%s' % self.ENCODING)
+        self.send_header('Content-Type', 'text/html; charset=%s' % UTF8)
         self.send_header('Content-Length', len(content))
         self.end_headers()
-        self.wfile.write(content.encode(self.ENCODING))
+        self.wfile.write(content.encode(UTF8))
 
 def usage():
     print(USAGE)
