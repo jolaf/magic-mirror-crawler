@@ -545,7 +545,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
 <br>Mirrored copy root: <a href="http://{3}"><code>http://{3}</code></a>
 </p>
 <p>Magic Mirror root: <a href="http://{4}{5}"><code>http://{4}{5}</code></a></p>
-<p>Magic Mirror project: <a href="https://code.google.com/p/magic-mirror-crawler"><code>https://code.google.com/p/magic-mirror-crawler</code></p>
+<p>Magic Mirror project: <a href="https://github.com/jolaf/magic-mirror-crawler"><code>https://github.com/jolaf/magic-mirror-crawler</code></p>
 <hr>
 </body>
 </html>
@@ -560,7 +560,7 @@ Original web site: <a href="{2}"><code>{2}</code></a>
 <h1>Magic Mirror</h1>
 <p><strong>404: Not found. Sorry, this page is not present in the mirror.</strong></p>
 <p>Magic Mirror root: <a href="http://{0}{1}"><code>http://{0}{1}</code></a></p>
-<p>Magic Mirror project: <a href="https://code.google.com/p/magic-mirror-crawler"><code>https://code.google.com/p/magic-mirror-crawler</code></p>
+<p>Magic Mirror project: <a href="https://github.com/jolaf/magic-mirror-crawler"><code>https://github.com/jolaf/magic-mirror-crawler</code></p>
 <hr>
 </body>
 </html>
