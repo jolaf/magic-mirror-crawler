@@ -53,3 +53,5 @@ Make sure DNS or `/etc/hosts` or whatever domain naming system points `archive.D
 ### Running built-in test suite ###
 
 `$ python3 MagicMirror.py test`
+
+-- Moved from https://code.google.com/p/magic-mirror-crawler
